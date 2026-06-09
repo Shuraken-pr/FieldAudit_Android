@@ -11,11 +11,11 @@ Native Android-приложение для сбора данных "в поля�
 - 📡 **Offline-First архитектура**: полная работоспособность без сети
 
 ## 🏗️ Архитектура проекта
-├── dmLocalDb.pas # DataModule: SQLite, FireDAC, CRUD-операции
-├── frmMain.pas # UI: ListView, Camera Service, GPS, WebView, Photo Viewer
-├── map.html # Яндекс.Карты API + JS-функции для взаимодействия с Delphi
-├── AndroidManifest.template.xml # Кастомный манифест с правами и метаданными
-└── assets/internal/ # (Deployment) map.html копируется в DocumentsPath
+-  dmLocalDb.pas # DataModule: SQLite, FireDAC, CRUD-операции
+-  frmMain.pas # UI: ListView, Camera Service, GPS, WebView, Photo Viewer
+-  map.html # Яндекс.Карты API + JS-функции для взаимодействия с Delphi
+-  AndroidManifest.template.xml # Кастомный манифест с правами и метаданными
+-  assets/internal/ # (Deployment) map.html копируется в DocumentsPath
 
 ## 🛠️ Стек технологий
 | Компонент | Назначение |
