@@ -1,0 +1,46 @@
+﻿<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <!-- Подключаем API Яндекс.Карт (получите бесплатный ключ в кабинете разработчика Яндекса) -->
+    <script src="https://api-maps.yandex.ru/2.1/?apikey=ВАШ_YANDEX_API_KEY&lang=ru_RU" type="text/javascript"></script>
+    <style>
+        body, html { padding: 0; margin: 0; width: 100%; height: 100%; }
+        #map { width: 100%; height: 100%; }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    <script type="text/javascript">
+        var myMap;
+        var myMarker;
+
+        ymaps.ready(init);
+        function init(){
+            myMap = new ymaps.Map("map", {
+                center: [55.76, 37.64], // Москва по умолчанию
+                zoom: 10
+            });
+        }
+
+        // Функция, которую будет вызывать Delphi
+        function updateLocation(lat, lon) {
+            var coords = [lat, lon];
+            
+            // Перемещаем карту
+            myMap.setCenter(coords, 15);
+
+            // Если маркера нет - создаем, если есть - двигаем
+            if (!myMarker) {
+                myMarker = new ymaps.Placemark(coords, {
+                    balloonContent: 'Вы здесь'
+                }, { preset: 'islands#blueCircleIcon' });
+                myMap.geoObjects.add(myMarker);
+            } else {
+                myMarker.geometry.setCoordinates(coords);
+            }
+        }
+    </script>
+</body>
+</html>

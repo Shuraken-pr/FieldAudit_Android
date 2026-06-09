@@ -1,0 +1,84 @@
+﻿# ==========================================
+# Delphi IDE & Compiler Outputs
+# ==========================================
+# Скомпилированные юниты и отладочные файлы
+*.dcu
+*.dcp
+*.bpl
+*.map
+*.tds
+*.ilc
+*.ild
+*.ilf
+*.ils
+*.vrc
+*.drc
+*.stat
+
+# Локальные настройки IDE (пути, окна, состояние)
+*.dsk
+*.identcache
+*.local
+*.dproj.local
+*.dproj.user
+*.cfg
+*.~*
+*.bak
+*.tmp
+
+# Папки сборки для всех платформ
+Win32/
+Win64/
+Android/
+Android64/
+iOSDevice/
+iOSDevice64/
+iOSSimulator/
+MacOS/
+
+# Внутренняя история и восстановление Delphi
+__history/
+__recovery/
+
+# ==========================================
+# Mobile / Android Build Artifacts
+# ==========================================
+# Генерируемые во время деплоя файлы (шаблон .template.xml оставляем!)
+AndroidManifest.xml
+assets/
+lib/
+obj/
+bin/
+gen/
+
+# ==========================================
+# Runtime Data & Secrets
+# ==========================================
+# Базы данных SQLite (создаются на устройстве/эмуляторе)
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Конфигурационные файлы с паролями/ключами
+db_settings.xml
+*.key
+*.pem
+*.p12
+*.keystore
+*.password
+
+# ==========================================
+# OS & Editor Artifacts
+# ==========================================
+.DS_Store
+Thumbs.db
+desktop.ini
+*.log
+*.su
+*.suo
+*.sln
+*.userprefs
+.vs/
