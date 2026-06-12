@@ -124,6 +124,7 @@ begin
     RESTRequest1.Params.Clear;
 
     // Добавляем ЧИСТЫЙ JSON-объект в тело запроса
+    RESTRequest1.Body.ClearBody;
     RESTRequest1.Body.Add(Payload.ToString, ctAPPLICATION_JSON);
 
     // 5. Выполнение
