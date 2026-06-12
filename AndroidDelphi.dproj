@@ -290,7 +290,6 @@
         <Android_NotificationAccentColor>#000000</Android_NotificationAccentColor>
         <EL_SecureFileSharing>true</EL_SecureFileSharing>
         <IncludeAndroid_VectorizedNotificationIcon>true</IncludeAndroid_VectorizedNotificationIcon>
-        <Android_ApiKey>AIzaSyBlXLULHMubIbbb4asK90BmDL8QsqnbUFw</Android_ApiKey>
         <EL_Maps>true</EL_Maps>
     </PropertyGroup>
     <PropertyGroup Condition="'$(Cfg_1_Win32)'!=''">
@@ -317,13 +316,17 @@
             <MainSource>MainSource</MainSource>
         </DelphiCompile>
         <DCCReference Include="frmMain.pas">
-            <Form>Form1</Form>
+            <Form>formMain</Form>
             <FormType>fmx</FormType>
         </DCCReference>
         <DCCReference Include="dmLocalDb.pas">
             <Form>dmLocDB</Form>
             <FormType>dfm</FormType>
             <DesignClass>TDataModule</DesignClass>
+        </DCCReference>
+        <DCCReference Include="frmPhotoView.pas">
+            <Form>formPhotoView</Form>
+            <FormType>fmx</FormType>
         </DCCReference>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>

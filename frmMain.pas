@@ -1,4 +1,4 @@
-unit frmMain;
+п»їunit frmMain;
 
 interface
 
@@ -9,10 +9,14 @@ uses
   FMX.ListView.Adapters.Base, FMX.ListView, FMX.MediaLibrary, System.Actions,
   FMX.ActnList, FMX.StdActns, FMX.Platform, System.IOUtils, System.StrUtils,
   System.Sensors, FMX.Maps, System.Sensors.Components, FMX.WebBrowser,
-  FMX.Objects;
+  FMX.Objects, REST.Types, REST.Client, Data.Bind.Components,
+  Data.Bind.ObjectScope, System.JSON, FireDAC.Stan.Intf, FireDAC.Stan.Option,
+  FireDAC.Stan.Param, FireDAC.Stan.Error, FireDAC.DatS, FireDAC.Phys.Intf,
+  FireDAC.DApt.Intf, FireDAC.Stan.Async, FireDAC.DApt, Data.DB,
+  FireDAC.Comp.DataSet, FireDAC.Comp.Client, System.ImageList, FMX.ImgList;
 
 type
-  TForm1 = class(TForm)
+  TformMain = class(TForm)
     ToolBar1: TToolBar;
     lblTitle: TLabel;
     lvTasks: TListView;
@@ -21,22 +25,27 @@ type
     lsMain: TLocationSensor;
     lblCoords: TLabel;
     wbMaps: TWebBrowser;
-    pnlPhotoViewer: TPanel;
-    imgPhoto: TImage;
-    btnCloseViewer: TButton;
     btnPhoto: TButton;
+    btnSync: TButton;
+    RESTClient1: TRESTClient;
+    RESTRequest1: TRESTRequest;
+    RESTResponse1: TRESTResponse;
+    FDQuery1: TFDQuery;
+    ilButtons: TImageList;
+    acSynchronize: TAction;
     procedure FormCreate(Sender: TObject);
     procedure FormActivate(Sender: TObject);
     procedure btnTakePhotoClick(Sender: TObject);
     procedure lsMainLocationChanged(Sender: TObject; const OldLocation,
       NewLocation: TLocationCoord2D);
-    procedure btnCloseViewerClick(Sender: TObject);
     procedure btnPhotoClick(Sender: TObject);
     procedure lvTasksItemClick(const Sender: TObject;
       const AItem: TListViewItem);
+    procedure acSynchronizeExecute(Sender: TObject);
+    procedure FormClose(Sender: TObject; var Action: TCloseAction);
   private
     FLoadedOnce: Boolean;
-    FCurrentLat, FCurrentLon: Double; // Храним последние координаты
+    FCurrentLat, FCurrentLon: Double; // РҐСЂР°РЅРёРј РїРѕСЃР»РµРґРЅРёРµ РєРѕРѕСЂРґРёРЅР°С‚С‹
     procedure LoadTasks;
     procedure DoDidFinish(Image: TBitmap);
     procedure DoDidCancel;
@@ -45,115 +54,196 @@ type
   end;
 
 var
-  Form1: TForm1;
+  formMain: TformMain;
 
 implementation
 
-uses dmLocalDb;
+uses dmLocalDb, frmPhotoView;
 
 {$R *.fmx}
 
 { TForm1 }
 
-procedure TForm1.btnCloseViewerClick(Sender: TObject);
+procedure TformMain.acSynchronizeExecute(Sender: TObject);
+var
+  Query: TFDQuery;
+  JsonArr: TJSONArray;
+  JObj, Details: TJSONObject;
+  Payload: TJSONObject;
+  ResponseStr: string;
 begin
-  pnlPhotoViewer.Visible := False;
-  wbMaps.Visible := true;
-  imgPhoto.Bitmap.Clear(TAlphaColorRec.Null); // Освобождаем память
+  // РРЅРёС†РёР°Р»РёР·Р°С†РёСЏ
+  Query := TFDQuery.Create(nil);
+  Query.Connection := dmLocDB.FDConnection1;
+  JsonArr := TJSONArray.Create;
+  Payload := nil;
+
+  try
+    // 1. Р’С‹Р±РёСЂР°РµРј РЅРµСЃРѕС…СЂР°РЅС‘РЅРЅС‹Рµ Р·Р°РїРёСЃРё
+    Query.SQL.Text := 'SELECT id, title, description, latitude, longitude FROM tasks WHERE is_synced = 0';
+    Query.Open;
+
+    if Query.IsEmpty then
+    begin
+      ShowMessage('Р’СЃРµ РґР°РЅРЅС‹Рµ СѓР¶Рµ СЃРёРЅС…СЂРѕРЅРёР·РёСЂРѕРІР°РЅС‹.');
+      Exit;
+    end;
+
+    // 2. Р¤РѕСЂРјРёСЂСѓРµРј JSON-РјР°СЃСЃРёРІ
+    while not Query.Eof do
+    begin
+      JObj := TJSONObject.Create;
+      JObj.AddPair('user_id', TJSONNumber.Create(1));
+      JObj.AddPair('event_type', TJSONString.Create('mobile_audit'));
+
+      Details := TJSONObject.Create;
+      Details.AddPair('photo_path', TJSONString.Create(Query.FieldByName('description').AsString));
+      Details.AddPair('lat', TJSONNumber.Create(Query.FieldByName('latitude').AsFloat));
+      Details.AddPair('lon', TJSONNumber.Create(Query.FieldByName('longitude').AsFloat));
+
+      // JObj Р°РІС‚РѕРјР°С‚РёС‡РµСЃРєРё СЃС‚Р°РЅРѕРІРёС‚СЃСЏ РІР»Р°РґРµР»СЊС†РµРј Details
+      JObj.AddPair('details', Details);
+      // JsonArr Р°РІС‚РѕРјР°С‚РёС‡РµСЃРєРё СЃС‚Р°РЅРѕРІРёС‚СЃСЏ РІР»Р°РґРµР»СЊС†РµРј JObj
+      JsonArr.Add(JObj);
+
+      Query.Next;
+    end;
+
+    // 3. рџ”‘ РљР›Р®Р§Р•Р’РћР™ РњРћРњР•РќРў: РЎРѕР·РґР°С‘Рј РѕР±С‘СЂС‚РєСѓ
+    Payload := TJSONObject.Create;
+    // РџРµСЂРµРґР°С‘Рј РјР°СЃСЃРёРІ РљРђРљ РћР‘РЄР•РљРў, Р° РЅРµ РєР°Рє СЃС‚СЂРѕРєСѓ.
+    // TJSONObject Р·Р°Р±РёСЂР°РµС‚ РІР»Р°РґРµРЅРёРµ JsonArr. .ToString РІС‹Р·РѕРІРµС‚СЃСЏ С‚РѕР»СЊРєРѕ РЅР° СЃРµСЂРІРµСЂРµ.
+    Payload.AddPair('AJsonData', JsonArr);
+
+    // 4. РќР°СЃС‚СЂРѕР№РєР° REST-Р·Р°РїСЂРѕСЃР°
+    RESTClient1.BaseURL := 'http://192.168.1.113:8082'; // вљ пёЏ РџСЂРѕРІРµСЂСЊС‚Рµ РІР°С€ IP
+    RESTRequest1.Client := RESTClient1;
+    RESTRequest1.Response := RESTResponse1;
+    RESTRequest1.Resource := 'datasnap/rest/TServerMethods1/SyncUpload';
+    RESTRequest1.Method := rmPOST;
+    RESTRequest1.Params.Clear;
+
+    // Р”РѕР±Р°РІР»СЏРµРј Р§РРЎРўР«Р™ JSON-РѕР±СЉРµРєС‚ РІ С‚РµР»Рѕ Р·Р°РїСЂРѕСЃР°
+    RESTRequest1.Body.Add(Payload.ToString, ctAPPLICATION_JSON);
+
+    // 5. Р’С‹РїРѕР»РЅРµРЅРёРµ
+    RESTRequest1.Execute;
+    ResponseStr := RESTResponse1.Content;
+
+    // 6. РћР±СЂР°Р±РѕС‚РєР° РѕС‚РІРµС‚Р°
+    if RESTResponse1.StatusCode = 200 then
+    begin
+      // РЎРµСЂРІРµСЂ РІРµСЂРЅСѓР» 200 OK в†’ РїРѕРјРµС‡Р°РµРј Р»РѕРєР°Р»СЊРЅС‹Рµ Р·Р°РїРёСЃРё РєР°Рє СЃРёРЅС…СЂРѕРЅРёР·РёСЂРѕРІР°РЅРЅС‹Рµ
+      dmLocDB.FDConnection1.ExecSQL('UPDATE tasks SET is_synced = 1 WHERE is_synced = 0');
+      LoadTasks; // РћР±РЅРѕРІР»СЏРµРј UI
+      ShowMessage('РЎРёРЅС…СЂРѕРЅРёР·Р°С†РёСЏ СѓСЃРїРµС€РЅР°: ' + ResponseStr);
+    end
+    else
+      ShowMessage('РћС€РёР±РєР° СЃРµСЂРІРµСЂР° (' + IntToStr(RESTResponse1.StatusCode) + '): ' + ResponseStr);
+
+  finally
+    Query.Free;
+    // вљ пёЏ Р’РђР–РќРћ: Payload РІР»Р°РґРµРµС‚ JsonArr Рё РІСЃРµРјРё РІР»РѕР¶РµРЅРЅС‹РјРё РѕР±СЉРµРєС‚Р°РјРё.
+    // РћСЃРІРѕР±РѕР¶РґР°РµРј РўРћР›Р¬РљРћ Payload. Р•СЃР»Рё Payload РЅРµ СЃРѕР·РґР°РЅ (РїСѓСЃС‚РѕР№ Р·Р°РїСЂРѕСЃ), РѕСЃРІРѕР±РѕР¶РґР°РµРј JsonArr.
+    if Assigned(Payload) then
+      Payload.Free
+    else
+      JsonArr.Free;
+  end;
 end;
 
-procedure TForm1.btnPhotoClick(Sender: TObject);
+procedure TformMain.btnPhotoClick(Sender: TObject);
 var
   FilePath: string;
 begin
   if not Assigned(lvTasks.Selected) then Exit;
 
-  // В нашем коде путь к файлу хранится в Detail
+  // Р’ РЅР°С€РµРј РєРѕРґРµ РїСѓС‚СЊ Рє С„Р°Р№Р»Сѓ С…СЂР°РЅРёС‚СЃСЏ РІ Detail
   FilePath := TListViewItem(lvTasks.Selected).Detail;
 
 
-  // Проверяем, что это файл и он существует
+  // РџСЂРѕРІРµСЂСЏРµРј, С‡С‚Рѕ СЌС‚Рѕ С„Р°Р№Р» Рё РѕРЅ СЃСѓС‰РµСЃС‚РІСѓРµС‚
   if (FilePath <> '') and TFile.Exists(FilePath) then
   begin
     try
-      // Загружаем картинку
-      imgPhoto.Bitmap.LoadFromFile(FilePath);
-      // Показываем панель просмотра
-      pnlPhotoViewer.Visible := True;
-      wbMaps.Visible := false;
+      if not Assigned(formPhotoView) then
+        formPhotoView := TformPhotoView.Create(nil);
+      // Р—Р°РіСЂСѓР¶Р°РµРј РєР°СЂС‚РёРЅРєСѓ
+      formPhotoView.imgPhoto.Bitmap.LoadFromFile(FilePath);
+      formPhotoView.Show;
     except
       on E: Exception do
-        ShowMessage('Ошибка открытия фото: ' + E.Message);
+        ShowMessage('РћС€РёР±РєР° РѕС‚РєСЂС‹С‚РёСЏ С„РѕС‚Рѕ: ' + E.Message);
     end;
   end
   else
-    ShowMessage('Для этой записи нет фотографии.');
+    ShowMessage('Р”Р»СЏ СЌС‚РѕР№ Р·Р°РїРёСЃРё РЅРµС‚ С„РѕС‚РѕРіСЂР°С„РёРё.');
 end;
 
-procedure TForm1.btnTakePhotoClick(Sender: TObject);
+procedure TformMain.btnTakePhotoClick(Sender: TObject);
 var
   Service: IFMXCameraService;
   Params: TParamsPhotoQuery;
 begin
-  // Запрашиваем сервис камеры
+  // Р—Р°РїСЂР°С€РёРІР°РµРј СЃРµСЂРІРёСЃ РєР°РјРµСЂС‹
   if TPlatformServices.Current.SupportsPlatformService(IFMXCameraService, Service) then
   begin
-    // Настройки съемки
-    Params.Editable := False;           // Не открывать редактор после съемки
-    Params.NeedSaveToAlbum := False;    // Не сохранять в галерею (мы сохраним сами в БД)
-    // ВАЖНО: Ограничиваем разрешение, чтобы не забить память телефона
+    // РќР°СЃС‚СЂРѕР№РєРё СЃСЉРµРјРєРё
+    Params.Editable := False;           // РќРµ РѕС‚РєСЂС‹РІР°С‚СЊ СЂРµРґР°РєС‚РѕСЂ РїРѕСЃР»Рµ СЃСЉРµРјРєРё
+    Params.NeedSaveToAlbum := False;    // РќРµ СЃРѕС…СЂР°РЅСЏС‚СЊ РІ РіР°Р»РµСЂРµСЋ (РјС‹ СЃРѕС…СЂР°РЅРёРј СЃР°РјРё РІ Р‘Р”)
+    // Р’РђР–РќРћ: РћРіСЂР°РЅРёС‡РёРІР°РµРј СЂР°Р·СЂРµС€РµРЅРёРµ, С‡С‚РѕР±С‹ РЅРµ Р·Р°Р±РёС‚СЊ РїР°РјСЏС‚СЊ С‚РµР»РµС„РѕРЅР°
     Params.RequiredResolution := TSize.Create(1024, 1024);
 
-    // Назначаем обработчики событий
+    // РќР°Р·РЅР°С‡Р°РµРј РѕР±СЂР°Р±РѕС‚С‡РёРєРё СЃРѕР±С‹С‚РёР№
     Params.OnDidFinishTaking := DoDidFinish;
     Params.OnDidCancelTaking := DoDidCancel;
 
-    // Запускаем камеру
+    // Р—Р°РїСѓСЃРєР°РµРј РєР°РјРµСЂСѓ
     Service.TakePhoto(Sender as TControl, Params);
   end
   else
-    ShowMessage('Камера недоступна на этом устройстве');
+    ShowMessage('РљР°РјРµСЂР° РЅРµРґРѕСЃС‚СѓРїРЅР° РЅР° СЌС‚РѕРј СѓСЃС‚СЂРѕР№СЃС‚РІРµ');
 end;
 
-procedure TForm1.DoDidCancel;
+procedure TformMain.DoDidCancel;
 begin
-  ShowMessage('Съемка отменена');
+  ShowMessage('РЎСЉРµРјРєР° РѕС‚РјРµРЅРµРЅР°');
 end;
 
-procedure TForm1.DoDidFinish(Image: TBitmap);
+procedure TformMain.DoDidFinish(Image: TBitmap);
 var
   Dir, FileName: string;
 begin
   try
-    // Создаем папку для фото, если нет
+    // РЎРѕР·РґР°РµРј РїР°РїРєСѓ РґР»СЏ С„РѕС‚Рѕ, РµСЃР»Рё РЅРµС‚
     Dir := System.IOUtils.TPath.Combine(System.IOUtils.TPath.GetDocumentsPath, 'photos');
     if not TDirectory.Exists(Dir) then
       TDirectory.CreateDirectory(Dir);
 
-    // Уникальное имя файла
+    // РЈРЅРёРєР°Р»СЊРЅРѕРµ РёРјСЏ С„Р°Р№Р»Р°
     FileName := System.IOUtils.TPath.Combine(Dir, FormatDateTime('yyyymmdd_hhnnss', Now) + '.jpg');
 
-    // Сохраняем
+    // РЎРѕС…СЂР°РЅСЏРµРј
     Image.SaveToFile(FileName);
 
-    // Пишем в БД
+    // РџРёС€РµРј РІ Р‘Р”
     dmLocDB.FDConnection1.ExecSQL(
       'INSERT INTO tasks (title, description, status, latitude, longitude) VALUES (?, ?, ?, ?, ?)',
-     ['Фото-отчет ' + FormatDateTime('hh_mm_ss', Now), FileName, 'new', FCurrentLat, FCurrentLon]);
+     ['Р¤РѕС‚Рѕ-РѕС‚С‡РµС‚ ' + FormatDateTime('hh_mm_ss', Now), FileName, 'new', FCurrentLat, FCurrentLon]);
 
-    // Обновляем список
+    // РћР±РЅРѕРІР»СЏРµРј СЃРїРёСЃРѕРє
     LoadTasks;
-    ShowMessage('Фото успешно сохранено!');
+    ShowMessage('Р¤РѕС‚Рѕ СѓСЃРїРµС€РЅРѕ СЃРѕС…СЂР°РЅРµРЅРѕ!');
   except
     on E: Exception do
-      ShowMessage('Ошибка: ' + E.Message);
+      ShowMessage('РћС€РёР±РєР°: ' + E.Message);
   end;
 end;
 
-procedure TForm1.FormActivate(Sender: TObject);
+procedure TformMain.FormActivate(Sender: TObject);
 begin
-  // Перезагружаем список при каждом возврате на форму (например, после добавления задачи)
-  // Используем флаг, чтобы не грузить дважды при первом старте
+  // РџРµСЂРµР·Р°РіСЂСѓР¶Р°РµРј СЃРїРёСЃРѕРє РїСЂРё РєР°Р¶РґРѕРј РІРѕР·РІСЂР°С‚Рµ РЅР° С„РѕСЂРјСѓ (РЅР°РїСЂРёРјРµСЂ, РїРѕСЃР»Рµ РґРѕР±Р°РІР»РµРЅРёСЏ Р·Р°РґР°С‡Рё)
+  // РСЃРїРѕР»СЊР·СѓРµРј С„Р»Р°Рі, С‡С‚РѕР±С‹ РЅРµ РіСЂСѓР·РёС‚СЊ РґРІР°Р¶РґС‹ РїСЂРё РїРµСЂРІРѕРј СЃС‚Р°СЂС‚Рµ
   if not FLoadedOnce then
   begin
     LoadTasks;
@@ -161,13 +251,19 @@ begin
   end;
 end;
 
-procedure TForm1.FormCreate(Sender: TObject);
+procedure TformMain.FormClose(Sender: TObject; var Action: TCloseAction);
+begin
+  if Assigned(formPhotoView) then
+    FreeAndNil(formPhotoView);
+end;
+
+procedure TformMain.FormCreate(Sender: TObject);
 var
   FilePath: string;
 begin
   lsMain.Active := True;
 
-  // Загрузка локального HTML файла
+  // Р—Р°РіСЂСѓР·РєР° Р»РѕРєР°Р»СЊРЅРѕРіРѕ HTML С„Р°Р№Р»Р°
   FilePath := System.IOUtils.TPath.Combine(System.IOUtils.TPath.GetDocumentsPath, 'map.html');
   if TFile.Exists(FilePath) then
     wbMaps.Navigate('file://' + FilePath)
@@ -178,7 +274,7 @@ begin
   LoadTasks;
 end;
 
-procedure TForm1.LoadTasks;
+procedure TformMain.LoadTasks;
 var
   Item: TListViewItem;
 begin
@@ -195,7 +291,7 @@ begin
       Item := lvTasks.Items.Add;
       Item.Text := dmLocDB.FDQuery1.FieldByName('title').AsString;
       Item.Detail := dmLocDB.FDQuery1.FieldByName('description').AsString;
-      // Можно менять цвет или иконку в зависимости от статуса
+      // РњРѕР¶РЅРѕ РјРµРЅСЏС‚СЊ С†РІРµС‚ РёР»Рё РёРєРѕРЅРєСѓ РІ Р·Р°РІРёСЃРёРјРѕСЃС‚Рё РѕС‚ СЃС‚Р°С‚СѓСЃР°
       Item.Tag := dmLocDB.FDQuery1.FieldByName('id').AsInteger;
 
       dmLocDB.FDQuery1.Next;
@@ -205,7 +301,7 @@ begin
   end;
 end;
 
-procedure TForm1.lsMainLocationChanged(Sender: TObject; const OldLocation,
+procedure TformMain.lsMainLocationChanged(Sender: TObject; const OldLocation,
   NewLocation: TLocationCoord2D);
 var
   JSCode: string;
@@ -213,19 +309,19 @@ begin
   FCurrentLat := NewLocation.Latitude;
   FCurrentLon := NewLocation.Longitude;
 
-  lblCoords.Text := Format('Широта: %.5f, Долгота: %.5f', [FCurrentLat, FCurrentLon]);
+  lblCoords.Text := Format('РЁРёСЂРѕС‚Р°: %.5f, Р”РѕР»РіРѕС‚Р°: %.5f', [FCurrentLat, FCurrentLon]);
 
-  // Формируем вызов JS-функции из нашего HTML
-  // Используем точку как разделитель дробной части (JS требует точку, а не запятую)
+  // Р¤РѕСЂРјРёСЂСѓРµРј РІС‹Р·РѕРІ JS-С„СѓРЅРєС†РёРё РёР· РЅР°С€РµРіРѕ HTML
+  // РСЃРїРѕР»СЊР·СѓРµРј С‚РѕС‡РєСѓ РєР°Рє СЂР°Р·РґРµР»РёС‚РµР»СЊ РґСЂРѕР±РЅРѕР№ С‡Р°СЃС‚Рё (JS С‚СЂРµР±СѓРµС‚ С‚РѕС‡РєСѓ, Р° РЅРµ Р·Р°РїСЏС‚СѓСЋ)
   JSCode := Format('updateLocation(%s, %s);',
     [StringReplace(FloatToStr(FCurrentLat), ',', '.', [rfReplaceAll]),
      StringReplace(FloatToStr(FCurrentLon), ',', '.', [rfReplaceAll])]);
 
-  // Выполняем скрипт в браузере
+  // Р’С‹РїРѕР»РЅСЏРµРј СЃРєСЂРёРїС‚ РІ Р±СЂР°СѓР·РµСЂРµ
   wbMaps.EvaluateJavaScript(JSCode);
 end;
 
-procedure TForm1.lvTasksItemClick(const Sender: TObject;
+procedure TformMain.lvTasksItemClick(const Sender: TObject;
   const AItem: TListViewItem);
 begin
   btnPhoto.Enabled := Assigned(AItem);
