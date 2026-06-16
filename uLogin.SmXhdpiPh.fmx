@@ -1,0 +1,30 @@
+inherited frmLogin_SmXhdpiPh: TfrmLogin_SmXhdpiPh
+  ClientHeight = 375
+  ClientWidth = 250
+  DesignerMasterStyle = 2
+  inherited pnlUserName: TPanel
+    Size.Width = 250.000000000000000000
+    inherited edUserName: TEdit
+      Size.Width = 81.000000000000000000
+    end
+  end
+  inherited pnlPassword: TPanel
+    Size.Width = 250.000000000000000000
+    inherited edPassword: TEdit
+      Size.Width = 81.000000000000000000
+    end
+  end
+  inherited pnlLogin: TPanel
+    Position.Y = 334.000000000000000000
+    Size.Width = 250.000000000000000000
+    inherited btnLogin: TButton
+      Size.Width = 250.000000000000000000
+    end
+  end
+  inherited pnlLocalIP: TPanel
+    Size.Width = 250.000000000000000000
+    inherited edLocalIP: TEdit
+      Size.Width = 81.000000000000000000
+    end
+  end
+end

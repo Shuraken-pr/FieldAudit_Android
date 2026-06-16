@@ -5,7 +5,9 @@ uses
   FMX.Forms,
   frmMain in 'frmMain.pas' {formMain},
   dmLocalDb in 'dmLocalDb.pas' {dmLocDB: TDataModule},
-  frmPhotoView in 'frmPhotoView.pas' {formPhotoView};
+  frmPhotoView in 'frmPhotoView.pas' {formPhotoView},
+  SessionManager in 'SessionManager.pas',
+  uLogin in 'uLogin.pas' {frmLogin};
 
 {$R *.res}
 

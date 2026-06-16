@@ -13,7 +13,8 @@ uses
   Data.Bind.ObjectScope, System.JSON, FireDAC.Stan.Intf, FireDAC.Stan.Option,
   FireDAC.Stan.Param, FireDAC.Stan.Error, FireDAC.DatS, FireDAC.Phys.Intf,
   FireDAC.DApt.Intf, FireDAC.Stan.Async, FireDAC.DApt, Data.DB,
-  FireDAC.Comp.DataSet, FireDAC.Comp.Client, System.ImageList, FMX.ImgList;
+  FireDAC.Comp.DataSet, FireDAC.Comp.Client, System.ImageList, FMX.ImgList,
+  System.Net.HttpClient;
 
 type
   TformMain = class(TForm)
@@ -49,6 +50,7 @@ type
     procedure LoadTasks;
     procedure DoDidFinish(Image: TBitmap);
     procedure DoDidCancel;
+    procedure DoLogin;
   public
     { Public declarations }
   end;
@@ -58,11 +60,11 @@ var
 
 implementation
 
-uses dmLocalDb, frmPhotoView;
+uses dmLocalDb, frmPhotoView, SessionManager, uLogin;
 
 {$R *.fmx}
 
-{ TForm1 }
+{ TformMain }
 
 procedure TformMain.acSynchronizeExecute(Sender: TObject);
 var
@@ -72,6 +74,14 @@ var
   Payload: TJSONObject;
   ResponseStr: string;
 begin
+  // 1. Проверка авторизации перед началом любых действий
+  if not AppSession.IsLoggedIn then
+  begin
+    ShowMessage('Сессия истекла. Пожалуйста, войдите в систему заново.');
+    DoLogin;
+    Exit;
+  end;
+
   // Инициализация
   Query := TFDQuery.Create(nil);
   Query.Connection := dmLocDB.FDConnection1;
@@ -79,7 +89,7 @@ begin
   Payload := nil;
 
   try
-    // 1. Выбираем несохранённые записи
+    // 2. Выбираем несохранённые записи
     Query.SQL.Text := 'SELECT id, title, description, latitude, longitude FROM tasks WHERE is_synced = 0';
     Query.Open;
 
@@ -89,11 +99,10 @@ begin
       Exit;
     end;
 
-    // 2. Формируем JSON-массив
+    // 3. Формируем JSON-массив
     while not Query.Eof do
     begin
       JObj := TJSONObject.Create;
-      JObj.AddPair('user_id', TJSONNumber.Create(1));
       JObj.AddPair('event_type', TJSONString.Create('mobile_audit'));
 
       Details := TJSONObject.Create;
@@ -101,51 +110,74 @@ begin
       Details.AddPair('lat', TJSONNumber.Create(Query.FieldByName('latitude').AsFloat));
       Details.AddPair('lon', TJSONNumber.Create(Query.FieldByName('longitude').AsFloat));
 
-      // JObj автоматически становится владельцем Details
       JObj.AddPair('details', Details);
-      // JsonArr автоматически становится владельцем JObj
       JsonArr.Add(JObj);
 
       Query.Next;
     end;
 
-    // 3. 🔑 КЛЮЧЕВОЙ МОМЕНТ: Создаём обёртку
+    // 4. Создаём обёртку
     Payload := TJSONObject.Create;
-    // Передаём массив КАК ОБЪЕКТ, а не как строку.
-    // TJSONObject забирает владение JsonArr. .ToString вызовется только на сервере.
     Payload.AddPair('AJsonData', JsonArr);
 
-    // 4. Настройка REST-запроса
-    RESTClient1.BaseURL := 'http://192.168.1.113:8082'; // ⚠️ Проверьте ваш IP
+    // 5. Настройка REST-запроса
+    RESTClient1.BaseURL := AppSession.ServerURL;// 'http://192.168.1.113:8082'; // ⚠️ Проверьте ваш актуальный IP
     RESTRequest1.Client := RESTClient1;
     RESTRequest1.Response := RESTResponse1;
     RESTRequest1.Resource := 'datasnap/rest/TServerMethods1/SyncUpload';
-    RESTRequest1.Method := rmPOST;
+    RESTRequest1.Method := TRESTRequestMethod.rmPOST;
     RESTRequest1.Params.Clear;
 
-    // Добавляем ЧИСТЫЙ JSON-объект в тело запроса
+    // Добавляем динамический токен в заголовок
+    with RESTRequest1.Params.AddItem do
+    begin
+      Name := 'X-Session-Token';
+      Value := AppSession.Token;
+      Kind := TRESTRequestParameterKind.pkHTTPHEADER;
+      Options := [TRESTRequestParameterOption.poDoNotEncode];
+    end;
+
     RESTRequest1.Body.ClearBody;
-    RESTRequest1.Body.Add(Payload.ToString, ctAPPLICATION_JSON);
+    RESTRequest1.Body.Add(Payload.ToString, TRESTContentType.ctAPPLICATION_JSON);
 
-    // 5. Выполнение
-    RESTRequest1.Execute;
-    ResponseStr := RESTResponse1.Content;
+    // 6. Выполнение и УНИВЕРСАЛЬНАЯ обработка ответа (работает во всех версиях Delphi)
+    try
+      RESTRequest1.Execute;
+    except
+      on E: Exception do
+      begin
+        // Даже при возникновении исключения, RESTResponse1 содержит ответ сервера
+        if RESTResponse1.StatusCode = 401 then
+        begin
+          AppSession.Logout;
+          ShowMessage('Ваша сессия истекла или была аннулирована. Требуется повторный вход.');
+          DoLogin;
+          Exit;
+        end;
 
-    // 6. Обработка ответа
+        // Если это другая ошибка, показываем её и прерываем выполнение
+        ShowMessage('Ошибка сети: ' + E.Message);
+        Exit;
+      end;
+    end;
+
+    // 7. Если мы здесь, значит исключения не было. Проверяем успешный статус.
     if RESTResponse1.StatusCode = 200 then
     begin
+      ResponseStr := RESTResponse1.Content;
       // Сервер вернул 200 OK → помечаем локальные записи как синхронизированные
       dmLocDB.FDConnection1.ExecSQL('UPDATE tasks SET is_synced = 1 WHERE is_synced = 0');
       LoadTasks; // Обновляем UI
       ShowMessage('Синхронизация успешна: ' + ResponseStr);
     end
     else
-      ShowMessage('Ошибка сервера (' + IntToStr(RESTResponse1.StatusCode) + '): ' + ResponseStr);
+    begin
+      ShowMessage('Ошибка сервера (Код: ' + IntToStr(RESTResponse1.StatusCode) + '): ' + RESTResponse1.Content);
+    end;
 
   finally
     Query.Free;
-    // ⚠️ ВАЖНО: Payload владеет JsonArr и всеми вложенными объектами.
-    // Освобождаем ТОЛЬКО Payload. Если Payload не создан (пустой запрос), освобождаем JsonArr.
+    // Освобождаем ТОЛЬКО Payload (он владеет JsonArr). Если Payload не создан, освобождаем JsonArr.
     if Assigned(Payload) then
       Payload.Free
     else
@@ -161,7 +193,6 @@ begin
 
   // В нашем коде путь к файлу хранится в Detail
   FilePath := TListViewItem(lvTasks.Selected).Detail;
-
 
   // Проверяем, что это файл и он существует
   if (FilePath <> '') and TFile.Exists(FilePath) then
@@ -239,6 +270,18 @@ begin
     on E: Exception do
       ShowMessage('Ошибка: ' + E.Message);
   end;
+end;
+
+procedure TformMain.DoLogin;
+begin
+  if not Assigned(frmLogin) then
+    frmLogin := TfrmLogin.Create(nil);
+  frmLogin.OnLoginSuccess := procedure
+  begin
+    // После успешного входа автоматически перезапускаем синхронизацию
+    acSynchronize.Execute;
+  end;
+  frmLogin.Show;
 end;
 
 procedure TformMain.FormActivate(Sender: TObject);

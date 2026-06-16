@@ -1,0 +1,126 @@
+object frmLogin: TfrmLogin
+  Left = 0
+  Top = 0
+  Caption = 'Form1'
+  ClientHeight = 267
+  ClientWidth = 354
+  FormFactor.Width = 320
+  FormFactor.Height = 480
+  FormFactor.Devices = [Desktop]
+  DesignerMasterStyle = 3
+  object pnlUserName: TPanel
+    Align = Top
+    Size.Width = 354.000000000000000000
+    Size.Height = 32.000000000000000000
+    Size.PlatformDefault = False
+    TabOrder = 1
+    object lblUserName: TLabel
+      Align = Left
+      Size.Width = 169.000000000000000000
+      Size.Height = 32.000000000000000000
+      Size.PlatformDefault = False
+      StyleLookup = 'labelstyle'
+      Text = #1048#1084#1103' '#1087#1086#1083#1100#1079#1086#1074#1072#1090#1077#1083#1103':'
+      TabOrder = 0
+    end
+    object edUserName: TEdit
+      Touch.InteractiveGestures = [LongTap, DoubleTap]
+      Align = Client
+      StyleLookup = 'roundededit'
+      TabOrder = 1
+      Size.Width = 185.000000000000000000
+      Size.Height = 32.000000000000000000
+      Size.PlatformDefault = False
+    end
+  end
+  object pnlPassword: TPanel
+    Align = Top
+    Position.Y = 32.000000000000000000
+    Size.Width = 354.000000000000000000
+    Size.Height = 37.000000000000000000
+    Size.PlatformDefault = False
+    TabOrder = 2
+    object edPassword: TEdit
+      Touch.InteractiveGestures = [LongTap, DoubleTap]
+      Align = Client
+      StyleLookup = 'roundededit'
+      TabOrder = 0
+      Password = True
+      Size.Width = 185.000000000000000000
+      Size.Height = 32.000000000000000000
+      Size.PlatformDefault = False
+    end
+    object lbPassword: TLabel
+      Align = Left
+      Size.Width = 169.000000000000000000
+      Size.Height = 37.000000000000000000
+      Size.PlatformDefault = False
+      StyleLookup = 'labelstyle'
+      Text = #1055#1072#1088#1086#1083#1100':'
+      TabOrder = 1
+    end
+  end
+  object pnlLogin: TPanel
+    Align = Bottom
+    Position.Y = 226.000000000000000000
+    Size.Width = 354.000000000000000000
+    Size.Height = 41.000000000000000000
+    Size.PlatformDefault = False
+    TabOrder = 3
+    object btnLogin: TButton
+      Align = Client
+      Size.Width = 354.000000000000000000
+      Size.Height = 41.000000000000000000
+      Size.PlatformDefault = False
+      TabOrder = 0
+      Text = #1042#1086#1081#1090#1080
+      TextSettings.Trimming = None
+      OnClick = btnLoginClick
+    end
+  end
+  object pnlLocalIP: TPanel
+    Align = Top
+    Position.Y = 69.000000000000000000
+    Size.Width = 354.000000000000000000
+    Size.Height = 40.000000000000000000
+    Size.PlatformDefault = False
+    TabOrder = 0
+    object lbLocalIP: TLabel
+      Align = Left
+      Size.Width = 169.000000000000000000
+      Size.Height = 40.000000000000000000
+      Size.PlatformDefault = False
+      StyleLookup = 'labelstyle'
+      Text = #1051#1086#1082#1072#1083#1100#1085#1099#1081' IP'
+      TabOrder = 0
+    end
+    object edLocalIP: TEdit
+      Touch.InteractiveGestures = [LongTap, DoubleTap]
+      Align = Client
+      StyleLookup = 'roundededit'
+      TabOrder = 1
+      Text = '192.168.1.1:8080'
+      Size.Width = 185.000000000000000000
+      Size.Height = 32.000000000000000000
+      Size.PlatformDefault = False
+    end
+  end
+  object RESTClientLogin: TRESTClient
+    Params = <>
+    SynchronizedEvents = False
+    Left = 32
+    Top = 132
+  end
+  object RESTRequestLogin: TRESTRequest
+    Client = RESTClientLogin
+    Params = <>
+    Response = RESTResponseLogin
+    SynchronizedEvents = False
+    Left = 120
+    Top = 160
+  end
+  object RESTResponseLogin: TRESTResponse
+    Left = 244
+    Top = 160
+  end
+end

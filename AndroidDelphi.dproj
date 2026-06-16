@@ -328,6 +328,11 @@
             <Form>formPhotoView</Form>
             <FormType>fmx</FormType>
         </DCCReference>
+        <DCCReference Include="SessionManager.pas"/>
+        <DCCReference Include="uLogin.pas">
+            <Form>frmLogin</Form>
+            <FormType>fmx</FormType>
+        </DCCReference>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>
         </BuildConfiguration>
