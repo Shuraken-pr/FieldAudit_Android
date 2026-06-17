@@ -14,7 +14,7 @@ uses
   FireDAC.Stan.Param, FireDAC.Stan.Error, FireDAC.DatS, FireDAC.Phys.Intf,
   FireDAC.DApt.Intf, FireDAC.Stan.Async, FireDAC.DApt, Data.DB,
   FireDAC.Comp.DataSet, FireDAC.Comp.Client, System.ImageList, FMX.ImgList,
-  System.Net.HttpClient;
+  System.Net.HttpClient, System.Net.URLClient, System.NetConsts;
 
 type
   TformMain = class(TForm)
@@ -28,9 +28,6 @@ type
     wbMaps: TWebBrowser;
     btnPhoto: TButton;
     btnSync: TButton;
-    RESTClient1: TRESTClient;
-    RESTRequest1: TRESTRequest;
-    RESTResponse1: TRESTResponse;
     FDQuery1: TFDQuery;
     ilButtons: TImageList;
     acSynchronize: TAction;
@@ -46,11 +43,14 @@ type
     procedure FormClose(Sender: TObject; var Action: TCloseAction);
   private
     FLoadedOnce: Boolean;
-    FCurrentLat, FCurrentLon: Double; // Храним последние координаты
+    FCurrentLat, FCurrentLon: Double;
     procedure LoadTasks;
     procedure DoDidFinish(Image: TBitmap);
     procedure DoDidCancel;
     procedure DoLogin;
+    procedure ValidateCert(
+      const Sender: TObject; const ARequest: TURLRequest;
+      const Certificate: TCertificate; var Accepted: Boolean);
   public
     { Public declarations }
   end;
@@ -64,17 +64,17 @@ uses dmLocalDb, frmPhotoView, SessionManager, uLogin;
 
 {$R *.fmx}
 
-{ TformMain }
-
 procedure TformMain.acSynchronizeExecute(Sender: TObject);
 var
   Query: TFDQuery;
   JsonArr: TJSONArray;
   JObj, Details: TJSONObject;
   Payload: TJSONObject;
+  HTTP: THTTPClient;
+  Response: IHTTPResponse;
   ResponseStr: string;
+  PayloadStream: TStringStream;
 begin
-  // 1. Проверка авторизации перед началом любых действий
   if not AppSession.IsLoggedIn then
   begin
     ShowMessage('Сессия истекла. Пожалуйста, войдите в систему заново.');
@@ -82,14 +82,12 @@ begin
     Exit;
   end;
 
-  // Инициализация
   Query := TFDQuery.Create(nil);
   Query.Connection := dmLocDB.FDConnection1;
   JsonArr := TJSONArray.Create;
   Payload := nil;
 
   try
-    // 2. Выбираем несохранённые записи
     Query.SQL.Text := 'SELECT id, title, description, latitude, longitude FROM tasks WHERE is_synced = 0';
     Query.Open;
 
@@ -99,7 +97,6 @@ begin
       Exit;
     end;
 
-    // 3. Формируем JSON-массив
     while not Query.Eof do
     begin
       JObj := TJSONObject.Create;
@@ -116,68 +113,53 @@ begin
       Query.Next;
     end;
 
-    // 4. Создаём обёртку
     Payload := TJSONObject.Create;
     Payload.AddPair('AJsonData', JsonArr);
 
-    // 5. Настройка REST-запроса
-    RESTClient1.BaseURL := AppSession.ServerURL;// 'http://192.168.1.113:8082'; // ⚠️ Проверьте ваш актуальный IP
-    RESTRequest1.Client := RESTClient1;
-    RESTRequest1.Response := RESTResponse1;
-    RESTRequest1.Resource := 'datasnap/rest/TServerMethods1/SyncUpload';
-    RESTRequest1.Method := TRESTRequestMethod.rmPOST;
-    RESTRequest1.Params.Clear;
-
-    // Добавляем динамический токен в заголовок
-    with RESTRequest1.Params.AddItem do
-    begin
-      Name := 'X-Session-Token';
-      Value := AppSession.Token;
-      Kind := TRESTRequestParameterKind.pkHTTPHEADER;
-      Options := [TRESTRequestParameterOption.poDoNotEncode];
-    end;
-
-    RESTRequest1.Body.ClearBody;
-    RESTRequest1.Body.Add(Payload.ToString, TRESTContentType.ctAPPLICATION_JSON);
-
-    // 6. Выполнение и УНИВЕРСАЛЬНАЯ обработка ответа (работает во всех версиях Delphi)
+    HTTP := THTTPClient.Create;
     try
-      RESTRequest1.Execute;
-    except
-      on E: Exception do
-      begin
-        // Даже при возникновении исключения, RESTResponse1 содержит ответ сервера
-        if RESTResponse1.StatusCode = 401 then
+      HTTP.ConnectionTimeout := 30000;
+      HTTP.ResponseTimeout := 60000;
+
+      // Принимаем самоподписанный сертификат (только для LAN/отладки)
+      HTTP.OnValidateServerCertificate := ValidateCert;
+
+      HTTP.CustomHeaders['X-Session-Token'] := AppSession.Token;
+      HTTP.ContentType := 'application/json';
+
+      PayloadStream := TStringStream.Create(Payload.ToString, TEncoding.UTF8);
+      try
+        Response := HTTP.Post(
+          AppSession.ServerURL + '/datasnap/rest/TServerMethods1/updateSyncUpload',
+          PayloadStream);
+
+        ResponseStr := Response.ContentAsString;
+
+        if Response.StatusCode = 200 then
+        begin
+          dmLocDB.FDConnection1.ExecSQL('UPDATE tasks SET is_synced = 1 WHERE is_synced = 0');
+          LoadTasks;
+          ShowMessage('Синхронизация успешна: ' + ResponseStr);
+        end
+        else if Response.StatusCode = 401 then
         begin
           AppSession.Logout;
-          ShowMessage('Ваша сессия истекла или была аннулирована. Требуется повторный вход.');
+          ShowMessage('Ваша сессия истекла. Требуется повторный вход.');
           DoLogin;
-          Exit;
+        end
+        else
+        begin
+          ShowMessage('Ошибка сервера (Код: ' + IntToStr(Response.StatusCode) + '): ' + ResponseStr);
         end;
-
-        // Если это другая ошибка, показываем её и прерываем выполнение
-        ShowMessage('Ошибка сети: ' + E.Message);
-        Exit;
+      finally
+        PayloadStream.Free;
       end;
-    end;
-
-    // 7. Если мы здесь, значит исключения не было. Проверяем успешный статус.
-    if RESTResponse1.StatusCode = 200 then
-    begin
-      ResponseStr := RESTResponse1.Content;
-      // Сервер вернул 200 OK → помечаем локальные записи как синхронизированные
-      dmLocDB.FDConnection1.ExecSQL('UPDATE tasks SET is_synced = 1 WHERE is_synced = 0');
-      LoadTasks; // Обновляем UI
-      ShowMessage('Синхронизация успешна: ' + ResponseStr);
-    end
-    else
-    begin
-      ShowMessage('Ошибка сервера (Код: ' + IntToStr(RESTResponse1.StatusCode) + '): ' + RESTResponse1.Content);
+    finally
+      HTTP.Free;
     end;
 
   finally
     Query.Free;
-    // Освобождаем ТОЛЬКО Payload (он владеет JsonArr). Если Payload не создан, освобождаем JsonArr.
     if Assigned(Payload) then
       Payload.Free
     else
@@ -191,16 +173,13 @@ var
 begin
   if not Assigned(lvTasks.Selected) then Exit;
 
-  // В нашем коде путь к файлу хранится в Detail
   FilePath := TListViewItem(lvTasks.Selected).Detail;
 
-  // Проверяем, что это файл и он существует
   if (FilePath <> '') and TFile.Exists(FilePath) then
   begin
     try
       if not Assigned(formPhotoView) then
         formPhotoView := TformPhotoView.Create(nil);
-      // Загружаем картинку
       formPhotoView.imgPhoto.Bitmap.LoadFromFile(FilePath);
       formPhotoView.Show;
     except
@@ -217,20 +196,15 @@ var
   Service: IFMXCameraService;
   Params: TParamsPhotoQuery;
 begin
-  // Запрашиваем сервис камеры
   if TPlatformServices.Current.SupportsPlatformService(IFMXCameraService, Service) then
   begin
-    // Настройки съемки
-    Params.Editable := False;           // Не открывать редактор после съемки
-    Params.NeedSaveToAlbum := False;    // Не сохранять в галерею (мы сохраним сами в БД)
-    // ВАЖНО: Ограничиваем разрешение, чтобы не забить память телефона
+    Params.Editable := False;
+    Params.NeedSaveToAlbum := False;
     Params.RequiredResolution := TSize.Create(1024, 1024);
 
-    // Назначаем обработчики событий
     Params.OnDidFinishTaking := DoDidFinish;
     Params.OnDidCancelTaking := DoDidCancel;
 
-    // Запускаем камеру
     Service.TakePhoto(Sender as TControl, Params);
   end
   else
@@ -247,23 +221,18 @@ var
   Dir, FileName: string;
 begin
   try
-    // Создаем папку для фото, если нет
     Dir := System.IOUtils.TPath.Combine(System.IOUtils.TPath.GetDocumentsPath, 'photos');
     if not TDirectory.Exists(Dir) then
       TDirectory.CreateDirectory(Dir);
 
-    // Уникальное имя файла
     FileName := System.IOUtils.TPath.Combine(Dir, FormatDateTime('yyyymmdd_hhnnss', Now) + '.jpg');
 
-    // Сохраняем
     Image.SaveToFile(FileName);
 
-    // Пишем в БД
     dmLocDB.FDConnection1.ExecSQL(
       'INSERT INTO tasks (title, description, status, latitude, longitude) VALUES (?, ?, ?, ?, ?)',
      ['Фото-отчет ' + FormatDateTime('hh_mm_ss', Now), FileName, 'new', FCurrentLat, FCurrentLon]);
 
-    // Обновляем список
     LoadTasks;
     ShowMessage('Фото успешно сохранено!');
   except
@@ -278,7 +247,6 @@ begin
     frmLogin := TfrmLogin.Create(nil);
   frmLogin.OnLoginSuccess := procedure
   begin
-    // После успешного входа автоматически перезапускаем синхронизацию
     acSynchronize.Execute;
   end;
   frmLogin.Show;
@@ -286,8 +254,6 @@ end;
 
 procedure TformMain.FormActivate(Sender: TObject);
 begin
-  // Перезагружаем список при каждом возврате на форму (например, после добавления задачи)
-  // Используем флаг, чтобы не грузить дважды при первом старте
   if not FLoadedOnce then
   begin
     LoadTasks;
@@ -307,7 +273,6 @@ var
 begin
   lsMain.Active := True;
 
-  // Загрузка локального HTML файла
   FilePath := System.IOUtils.TPath.Combine(System.IOUtils.TPath.GetDocumentsPath, 'map.html');
   if TFile.Exists(FilePath) then
     wbMaps.Navigate('file://' + FilePath)
@@ -335,7 +300,6 @@ begin
       Item := lvTasks.Items.Add;
       Item.Text := dmLocDB.FDQuery1.FieldByName('title').AsString;
       Item.Detail := dmLocDB.FDQuery1.FieldByName('description').AsString;
-      // Можно менять цвет или иконку в зависимости от статуса
       Item.Tag := dmLocDB.FDQuery1.FieldByName('id').AsInteger;
 
       dmLocDB.FDQuery1.Next;
@@ -355,13 +319,10 @@ begin
 
   lblCoords.Text := Format('Широта: %.5f, Долгота: %.5f', [FCurrentLat, FCurrentLon]);
 
-  // Формируем вызов JS-функции из нашего HTML
-  // Используем точку как разделитель дробной части (JS требует точку, а не запятую)
   JSCode := Format('updateLocation(%s, %s);',
     [StringReplace(FloatToStr(FCurrentLat), ',', '.', [rfReplaceAll]),
      StringReplace(FloatToStr(FCurrentLon), ',', '.', [rfReplaceAll])]);
 
-  // Выполняем скрипт в браузере
   wbMaps.EvaluateJavaScript(JSCode);
 end;
 
@@ -369,6 +330,14 @@ procedure TformMain.lvTasksItemClick(const Sender: TObject;
   const AItem: TListViewItem);
 begin
   btnPhoto.Enabled := Assigned(AItem);
+end;
+
+procedure TformMain.ValidateCert(const Sender: TObject;
+  const ARequest: TURLRequest; const Certificate: TCertificate;
+  var Accepted: Boolean);
+begin
+  //не использовать для Production.
+  Accepted := true;
 end;
 
 end.

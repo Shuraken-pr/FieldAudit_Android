@@ -11,6 +11,7 @@ Native Android-приложение для сбора данных "в поля�
 - 🔄 **Offline-First синхронизация**: надежная отправка накопленных данных на сервер при появлении сети.
 - 🔐 **Сессионная аутентификация**: безопасный вход по логину/паролю с получением временного токена (GUID).
 - 📡 **Graceful Degradation**: автоматический возврат к экрану входа при истечении сессии (401 Unauthorized).
+- 🔒 **HTTPS с самоподписанными сертификатами**: поддержка работы с серверами, использующими Nginx Reverse Proxy.
 
 ---
 
@@ -18,13 +19,14 @@ Native Android-приложение для сбора данных "в поля�
 
 ```text
 Android_Delphi/
-├── dmLocalDb.pas          # DataModule: SQLite, FireDAC, CRUD-операции
-├── frmMain.pas            # UI: ListView, Camera, GPS, WebView, REST-синхронизация
-├── frmPhotoView.pas       # Полноэкранный просмотр фото
-├── uLogin.pas             # UI и логика входа, запрос токена у сервера
-├── SessionManager.pas     # Глобальное хранилище токена и URL сервера в памяти
-├── map.html               # Яндекс.Карты API + JS-функции для Native↔Web bridge
-└── AndroidManifest.template.xml # Кастомный манифест с правами
+├── dmLocalDb.pas                  # DataModule: SQLite, FireDAC, CRUD-операции
+├── frmMain.pas                    # UI: ListView, Camera, GPS, WebView, HTTP-синхронизация
+├── frmPhotoView.pas               # Полноэкранный просмотр фото
+├── uLogin.pas                     # UI и логика входа, запрос токена у сервера
+├── SessionManager.pas             # Глобальное хранилище токена и URL сервера в памяти
+├── map.html                       # Яндекс.Карты API + JS-функции для Native↔Web bridge
+├── network_security_config.xml    # Конфигурация безопасности сети (разрешение самоподписанных сертификатов)
+└── AndroidManifest.template.xml   # Кастомный манифест с правами и networkSecurityConfig
 ```
 
 ---
@@ -35,11 +37,12 @@ Android_Delphi/
 | :--- | :--- |
 | **Delphi 12 Athens** | Кроссплатформенная FMX-разработка |
 | **FireDAC + SQLite** | Локальное хранение данных, офлайн-режим |
-| **REST Client (TRESTClient)** | Взаимодействие с DataSnap-сервером |
-| **System.Net.HttpClient** | Обработка HTTP-ошибок (401, 500) |
+| **System.Net.HttpClient (THTTPClient)** | Нативный HTTP-клиент Android для взаимодействия с сервером |
+| **System.Net.URLClient** | Работа с URL и сетевыми запросами |
 | **IFMXCameraService** | Прямой вызов системной камеры с контролем разрешения |
 | **TLocationSensor** | Получение GPS/ГЛОНАСС координат |
 | **TWebBrowser + JS** | Рендеринг Яндекс.Карт, `EvaluateJavaScript` для Native↔Web bridge |
+| **Network Security Config** | Android-механизм для доверия самоподписанным сертификатам |
 
 ---
 
@@ -48,7 +51,7 @@ Android_Delphi/
 ### 1. Предварительные требования
 - Embarcadero Delphi 11/12 с установленным **Android 64-bit SDK**.
 - Android NDK `r25c` (25.2.x) или новее, JDK 17.
-- Развернутый и запущенный бэкенд **DataSnapServer** (см. соответствующий репозиторий).
+- Развернутый и запущенный бэкенд **DataSnapServer** с настроенным **Nginx Reverse Proxy** (см. соответствующий репозиторий).
 - Права доступа в `Project Options → Application → Uses Permissions`:
   - ✅ `Camera`
   - ✅ `Access Coarse Location`
@@ -57,9 +60,27 @@ Android_Delphi/
 
 ### 2. Настройка карт и сервера
 1. **Карты**: Получите API-ключ **Яндекс.Карт**, откройте `map.html` и замените `ВАШ_YANDEX_API_KEY`.
-2. **Сервер**: В модуле `SessionManager.pas` (или в UI настроек, если реализовано) укажите актуальный IP-адрес и порт вашего сервера (по умолчанию `http://192.168.1.113:8082`).
+2. **Сервер**: В модуле `SessionManager.pas` укажите актуальный URL вашего сервера (по умолчанию `https://192.168.1.113`). URL должен начинаться с `https://`, так как сервер работает через Nginx с SSL-терминацией.
 
-### 3. Сборка и деплой
+### 3. Настройка Network Security Config
+
+Файл `network_security_config.xml` уже настроен для работы с самоподписанными сертификатами:
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchor>
+            <certificates src="user"/>
+            <certificates src="system"/>
+        </trust-anchor>
+    </base-config>
+</network-security-config>
+```
+
+Этот файл автоматически включается в APK через **Project → Deployment** (Remote Path: `res\xml\`).
+
+### 4. Сборка и деплой
 - Подключите Android-устройство по USB (включите "Отладку по USB").
 - В IDE выберите платформу Android 64-bit.
 - Нажмите `Project → Clean`, затем `Run` (F9).
@@ -70,24 +91,80 @@ Android_Delphi/
 
 ## 💡 Архитектурные решения
 
-- **Асинхронный UI (Callback Pattern)**: Вместо блокирующего `ShowModal` для экрана входа используется анонимный метод (`TProc` callback). Это единственный корректный способ работы с асинхронным UI в FireMonkey под Android, позволяющий автоматически возобновить прерванную синхронизацию после успешного входа.
-- **Безопасное хранение токена**: Токен сессии хранится только в оперативной памяти (`SessionManager`). При закрытии приложения он уничтожается, что исключает его кражу через файловую систему Android.
-- **Оптимизация камеры**: `RequiredResolution := TSize.Create(1024, 1024)` предотвращает `OutOfMemoryError` при съемке на камеры с высоким разрешением.
-- **Надежная обработка ошибок**: Реализована двухуровневая проверка ошибки `401 Unauthorized`:
-  1. Проверка `RESTResponse1.StatusCode = 401` сразу после `Execute` (работает в 99% случаев).
-  2. Перехват исключения `ENetHTTPClientException` и проверка `E.StatusCode = 401` (страховка).
-- **Гибридный паттерн карт**: Независимый слой карт через HTML/JS упрощает замену провайдера и демонстрирует понимание Native-Web взаимодействия.
+### Асинхронный UI (Callback Pattern)
+Вместо блокирующего `ShowModal` для экрана входа используется анонимный метод (`TProc` callback). Это единственный корректный способ работы с асинхронным UI в FireMonkey под Android, позволяющий автоматически возобновить прерванную синхронизацию после успешного входа.
+
+```pascal
+// Пример использования в frmMain.pas
+frmLogin.OnLoginSuccess := procedure
+begin
+  acSynchronize.Execute; // Автоматический перезапуск после входа
+end;
+frmLogin.Show;
+```
+
+### Безопасное хранение токена
+Токен сессии хранится только в оперативной памяти (`SessionManager`). При закрытии приложения он уничтожается, что исключает его кражу через файловую систему Android.
+
+### Оптимизация камеры
+`RequiredResolution := TSize.Create(1024, 1024)` предотвращает `OutOfMemoryError` при съемке на камеры с высоким разрешением.
+
+### Обработка самоподписанных сертификатов
+Для работы с сервером, использующим самоподписанный сертификат (например, через Nginx), реализован двухуровневый механизм:
+
+1. **Network Security Config** (`network_security_config.xml`): Разрешает Android доверять пользовательским сертификатам на уровне системы.
+2. **ValidateCert** (в `uLogin.pas` и `frmMain.pas`): Программный обработчик `OnValidateServerCertificate` с `Accepted := True` для полного обхода проверки.
+
+```pascal
+procedure TfrmLogin.ValidateCert(const Sender: TObject; const ARequest: TURLRequest;
+  const Certificate: TCertificate; var Accepted: Boolean);
+begin
+  Accepted := True; // Принимаем самоподписанный сертификат
+end;
+```
+
+### Надежная обработка ошибок 401
+Реализована автоматическая обработка истечения сессии:
+1. При получении HTTP 401 токен очищается (`AppSession.Logout`).
+2. Показывается форма входа.
+3. После успешного входа автоматически возобновляется прерванная операция синхронизации.
+
+### Гибридный паттерн карт
+Независимый слой карт через HTML/JS упрощает замену провайдера и демонстрирует понимание Native-Web взаимодействия.
+
+---
+
+## 🌐 Архитектура взаимодействия с сервером
+
+Приложение работает с сервером через **Nginx Reverse Proxy**:
+
+```
+[Android] --HTTPS (443)--> [Nginx] --HTTP (8082)--> [Delphi Server]
+   ↑                          ↑                         ↑
+   |                          |                         |
+   |                   cert.pem + key.pem          Только HTTP
+   |                   (самоподписанные)           (без SSL)
+   |
+   network_security_config.xml
+   + ValidateCert (Accepted := True)
+```
+
+**Преимущества:**
+- Весь трафик шифруется через HTTPS (защита от перехвата токенов).
+- Delphi-сервер не содержит кода для работы с SSL — упрощение архитектуры.
+- Легко заменить самоподписанный сертификат на настоящий (Let's Encrypt) без изменения кода приложения.
 
 ---
 
 ## 🔮 Roadmap (Планы развития)
 
-- [ ] Переход на **HTTPS** (TLS) для защиты трафика в публичных сетях.
 - [ ] Внедрение **SQLCipher** для шифрования локальной SQLite базы данных.
 - [ ] Фоновая синхронизация через Android WorkManager.
 - [ ] Экспорт отчётов в PDF прямо на устройстве.
 - [ ] Загрузка самих фотографий на сервер (сейчас передается только путь/мета-информация).
 - [ ] Биометрическая аутентификация (отпечаток пальца / FaceID) для быстрого входа в приложение.
+- [ ] Push-уведомления через Firebase Cloud Messaging (FCM) для получения задач от сервера.
+- [ ] Офлайн-карты: загрузка тайлов Яндекс.Карт в локальный кэш для работы без интернета.
 
 ---
 

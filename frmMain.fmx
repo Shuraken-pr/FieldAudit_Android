@@ -118,24 +118,6 @@ object formMain: TformMain
     Left = 412
     Top = 248
   end
-  object RESTClient1: TRESTClient
-    Params = <>
-    SynchronizedEvents = False
-    Left = 448
-    Top = 148
-  end
-  object RESTRequest1: TRESTRequest
-    Client = RESTClient1
-    Params = <>
-    Response = RESTResponse1
-    SynchronizedEvents = False
-    Left = 544
-    Top = 148
-  end
-  object RESTResponse1: TRESTResponse
-    Left = 452
-    Top = 208
-  end
   object FDQuery1: TFDQuery
     Left = 152
     Top = 136

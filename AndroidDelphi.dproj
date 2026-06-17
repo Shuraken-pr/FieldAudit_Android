@@ -619,6 +619,13 @@
                         <Overwrite>true</Overwrite>
                     </Platform>
                 </DeployFile>
+                <DeployFile LocalName="network_security_config.xml" Configuration="Debug" Class="File">
+                    <Platform Name="Android64">
+                        <RemoteDir>res\xml\</RemoteDir>
+                        <RemoteName>network_security_config.xml</RemoteName>
+                        <Overwrite>true</Overwrite>
+                    </Platform>
+                </DeployFile>
                 <DeployClass Name="AdditionalDebugSymbols">
                     <Platform Name="iOSSimulator">
                         <Operation>1</Operation>

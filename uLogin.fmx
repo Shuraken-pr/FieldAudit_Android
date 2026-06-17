@@ -99,28 +99,10 @@ object frmLogin: TfrmLogin
       Align = Client
       StyleLookup = 'roundededit'
       TabOrder = 1
-      Text = '192.168.1.1:8080'
+      Text = '192.168.1.1'
       Size.Width = 185.000000000000000000
       Size.Height = 32.000000000000000000
       Size.PlatformDefault = False
     end
-  end
-  object RESTClientLogin: TRESTClient
-    Params = <>
-    SynchronizedEvents = False
-    Left = 32
-    Top = 132
-  end
-  object RESTRequestLogin: TRESTRequest
-    Client = RESTClientLogin
-    Params = <>
-    Response = RESTResponseLogin
-    SynchronizedEvents = False
-    Left = 120
-    Top = 160
-  end
-  object RESTResponseLogin: TRESTResponse
-    Left = 244
-    Top = 160
   end
 end
