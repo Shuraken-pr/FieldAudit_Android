@@ -130,7 +130,7 @@ begin
       PayloadStream := TStringStream.Create(Payload.ToString, TEncoding.UTF8);
       try
         Response := HTTP.Post(
-          AppSession.ServerURL + '/datasnap/rest/TServerMethods1/updateSyncUpload',
+          AppSession.ServerURL + '/datasnap/rest/TServerMethods1/SyncUpload',
           PayloadStream);
 
         ResponseStr := Response.ContentAsString;
