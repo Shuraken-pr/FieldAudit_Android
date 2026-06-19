@@ -11,7 +11,8 @@
 | `TTestSessionManager` | 8 | Управление токеном, URL, авторизацией |
 | `TTestClientJsonParsing` | 8 | Парсинг JSON ответов сервера |
 | `TTestLocalDb` | 8 | CRUD операции с локальной SQLite |
-| **ИТОГО** | **24** | **100% успешное прохождение** ✅ |
+| `TTestJpegUtils` | 5 | Сжатие фото, ресайз, сохранение пропорций |
+| **ИТОГО** | **29** | **100% успешное прохождение** ✅ |
 
 ## 📁 Структура проекта
 
@@ -19,9 +20,10 @@
 Tests/
 ├── TestRunner.dpr              # Главный файл проекта (открывать в Delphi)
 ├── TestRunner.dproj            # Настройки проекта (создаётся Delphi автоматически)
-├── TestSessionManager.pas      # Тесты SessionManager
-├── TestJsonParsing.pas         # Тесты парсинга JSON
-├── TestLocalDb.pas             # Тесты SQLite CRUD
+├── TestSessionManager.pas      # Тесты SessionManager (✅ подключён)
+├── TestJsonParsing.pas         # Тесты парсинга JSON (✅ подключён)
+├── TestLocalDb.pas             # Тесты SQLite CRUD (✅ подключён)
+├── TestJpegUtils.pas           # Тесты JpegUtils.pas (✅ подключён)
 ├── dunitx-results.xml          # Отчёт о последнем прогоне (NUnit XML)
 └── README.md                   # Этот файл
 ```
@@ -70,17 +72,35 @@ Tests/
 | `TestGetUnsyncedTasks` | Получение несинхронизированных |
 | `TestTaskWithCoordinates` | Задачи с координатами GPS |
 
+### TTestJpegUtils (5 тестов)
+Проверяет модуль `JpegUtils.pas`, отвечающий за сжатие фотографий перед отправкой на сервер.
+
+| Имя теста | Что проверяет |
+|-----------|---------------|
+| `TestCompressPhoto_InvalidPath` | Возвращает `False` для несуществующего файла, не создаёт выходной |
+| `TestCompressPhoto_ReducesWidth` | Ширина уменьшается до `maxWidth` (1920px) |
+| `TestCompressPhoto_CreatesFile` | Выходной файл создаётся и не пустой |
+| `TestCompressPhoto_MaintainsAspectRatio` | Соотношение сторон сохраняется (допуск 0.01) |
+| `TestCompressPhoto_SmallImageUnchanged` | Маленькое изображение (меньше maxWidth) не ресайзится |
+
 ## 📈 Результаты тестирования
 
-Последний прогон (2026-06-18):
+Последний прогон (2026-06-19):
 
 ```
-Total tests: 24
-Passed:      24 ✅
+Total tests: 29
+Passed:      29 ✅
 Failed:      0
 Ignored:     0
-Time:        0.047s
+Time:        ~0.05s
 ```
+
+### История исправлений
+
+| Дата | Описание |
+|------|----------|
+| 2026-06-19 | Подключён `TestJpegUtils.pas` к `TestRunner.dpr` |
+| 2026-06-18 | Начальный прогон: 24 теста, 100% прохождение |
 
 ## 🚀 Как запустить тесты
 

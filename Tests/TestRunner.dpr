@@ -1,4 +1,4 @@
-﻿program TestRunner;
+program TestRunner;
 
 {$APPTYPE CONSOLE}
 {$R *.res}
@@ -10,7 +10,8 @@ uses
   System.SysUtils,
   TestSessionManager in 'TestSessionManager.pas',
   TestJsonParsing in 'TestJsonParsing.pas',
-  TestLocalDb in 'TestLocalDb.pas';
+  TestLocalDb in 'TestLocalDb.pas',
+  TestJpegUtils in 'TestJpegUtils.pas';
 
 var
   Runner: ITestRunner;

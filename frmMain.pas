@@ -9,12 +9,12 @@ uses
   FMX.ListView.Adapters.Base, FMX.ListView, FMX.MediaLibrary, System.Actions,
   FMX.ActnList, FMX.StdActns, FMX.Platform, System.IOUtils, System.StrUtils,
   System.Sensors, FMX.Maps, System.Sensors.Components, FMX.WebBrowser,
-  FMX.Objects, REST.Types, REST.Client, Data.Bind.Components,
-  Data.Bind.ObjectScope, System.JSON, FireDAC.Stan.Intf, FireDAC.Stan.Option,
+  FMX.Objects, System.JSON, FireDAC.Stan.Intf, FireDAC.Stan.Option,
   FireDAC.Stan.Param, FireDAC.Stan.Error, FireDAC.DatS, FireDAC.Phys.Intf,
   FireDAC.DApt.Intf, FireDAC.Stan.Async, FireDAC.DApt, Data.DB,
   FireDAC.Comp.DataSet, FireDAC.Comp.Client, System.ImageList, FMX.ImgList,
-  System.Net.HttpClient, System.Net.URLClient, System.NetConsts;
+  System.Net.HttpClient, System.Net.URLClient, System.Net.Mime,
+  System.DateUtils, JpegUtils, System.NetEncoding, System.NetConsts;
 
 type
   TformMain = class(TForm)
@@ -65,15 +65,20 @@ uses dmLocalDb, frmPhotoView, SessionManager, uLogin;
 {$R *.fmx}
 
 procedure TformMain.acSynchronizeExecute(Sender: TObject);
+const
+  MAX_RETRY = 2;
 var
-  Query: TFDQuery;
-  JsonArr: TJSONArray;
-  JObj, Details: TJSONObject;
-  Payload: TJSONObject;
+  Query, QUpdate: TFDQuery;
   HTTP: THTTPClient;
   Response: IHTTPResponse;
-  ResponseStr: string;
   PayloadStream: TStringStream;
+  PhotoBytes: TBytes;
+  Metadata: TJSONObject;
+  PhotoPath, CompressedPath, FileName, UploadURL, JsonMeta: string;
+  RetryCount: Integer;
+  SyncSuccess: Boolean;
+  TaskId: Integer;
+  BatchUUID: string;
 begin
   if not AppSession.IsLoggedIn then
   begin
@@ -84,11 +89,11 @@ begin
 
   Query := TFDQuery.Create(nil);
   Query.Connection := dmLocDB.FDConnection1;
-  JsonArr := TJSONArray.Create;
-  Payload := nil;
-
   try
-    Query.SQL.Text := 'SELECT id, title, description, latitude, longitude FROM tasks WHERE is_synced = 0';
+    Query.SQL.Text :=
+      'SELECT id, title, description, latitude, longitude, upload_attempts ' +
+      'FROM tasks WHERE is_synced = 0 AND upload_attempts < 3 ' +
+      'ORDER BY id';
     Query.Open;
 
     if Query.IsEmpty then
@@ -99,71 +104,138 @@ begin
 
     while not Query.Eof do
     begin
-      JObj := TJSONObject.Create;
-      JObj.AddPair('event_type', TJSONString.Create('mobile_audit'));
+      TaskId := Query.FieldByName('id').AsInteger;
+      PhotoPath := Query.FieldByName('description').AsString;
+      RetryCount := 0;
+      SyncSuccess := False;
+      BatchUUID := TGUID.NewGuid.ToString;
 
-      Details := TJSONObject.Create;
-      Details.AddPair('photo_path', TJSONString.Create(Query.FieldByName('description').AsString));
-      Details.AddPair('lat', TJSONNumber.Create(Query.FieldByName('latitude').AsFloat));
-      Details.AddPair('lon', TJSONNumber.Create(Query.FieldByName('longitude').AsFloat));
+      while (RetryCount <= MAX_RETRY) and not SyncSuccess do
+      begin
+        HTTP := THTTPClient.Create;
+        try
+          HTTP.ConnectionTimeout := 30000;
+          HTTP.ResponseTimeout := 120000;
 
-      JObj.AddPair('details', Details);
-      JsonArr.Add(JObj);
+          HTTP.OnValidateServerCertificate := ValidateCert;
+
+          // Формируем metadata
+          Metadata := TJSONObject.Create;
+          try
+            Metadata.AddPair('event_type', 'mobile_audit');
+            Metadata.AddPair('occurred_at', DateToISO8601(Now));
+            Metadata.AddPair('lat', TJSONNumber.Create(Query.FieldByName('latitude').AsFloat));
+            Metadata.AddPair('lon', TJSONNumber.Create(Query.FieldByName('longitude').AsFloat));
+            Metadata.AddPair('title', Query.FieldByName('title').AsString);
+            Metadata.AddPair('device_id', 'android');
+            Metadata.AddPair('batch_id', BatchUUID);
+            JsonMeta := Metadata.ToString;
+          finally
+            Metadata.Free;
+          end;
+
+          // JSON payload с metadata и фото в Base64 (избегает проблем multipart/кодировок)
+          if TFile.Exists(PhotoPath) then
+          begin
+            FileName := System.IOUtils.TPath.GetFileName(PhotoPath);
+            CompressedPath := System.IOUtils.TPath.Combine(System.IOUtils.TPath.GetTempPath, 'cmp_' + FileName);
+
+            if CompressPhoto(PhotoPath, CompressedPath, 1920, 85) then
+              PhotoBytes := TFile.ReadAllBytes(CompressedPath)
+            else
+              PhotoBytes := TFile.ReadAllBytes(PhotoPath);
+          end
+          else
+          begin
+            SetLength(PhotoBytes, 0);
+          end;
+
+          Metadata := TJSONObject.Create;
+          try
+            Metadata.AddPair('event_type', 'mobile_audit');
+            Metadata.AddPair('occurred_at', DateToISO8601(Now));
+            Metadata.AddPair('lat', TJSONNumber.Create(Query.FieldByName('latitude').AsFloat));
+            Metadata.AddPair('lon', TJSONNumber.Create(Query.FieldByName('longitude').AsFloat));
+            Metadata.AddPair('title', Query.FieldByName('title').AsString);
+            Metadata.AddPair('device_id', 'android');
+            Metadata.AddPair('batch_id', BatchUUID);
+            if Length(PhotoBytes) > 0 then
+            begin
+              Metadata.AddPair('photo_base64', TNetEncoding.Base64.EncodeBytesToString(PhotoBytes));
+              Metadata.AddPair('photo_filename', FileName);
+            end;
+            JsonMeta := Metadata.ToString;
+          finally
+            Metadata.Free;
+          end;
+
+          HTTP.ContentType := 'application/json';
+          HTTP.CustomHeaders['X-Session-Token'] := AppSession.Token;
+          UploadURL := AppSession.ServerURL + '/upload';
+
+          PayloadStream := TStringStream.Create(JsonMeta, TEncoding.UTF8);
+          try
+            Response := HTTP.Post(UploadURL, PayloadStream);
+          finally
+            PayloadStream.Free;
+          end;
+
+          if Response.StatusCode = 200 then
+          begin
+            QUpdate := TFDQuery.Create(nil);
+            try
+              QUpdate.Connection := dmLocDB.FDConnection1;
+              QUpdate.SQL.Text :=
+                'UPDATE tasks SET is_synced = 1, upload_attempts = upload_attempts + 1, ' +
+                'last_error = NULL, can_delete_local = 0 WHERE id = :id';
+              QUpdate.ParamByName('id').AsInteger := TaskId;
+              QUpdate.ExecSQL;
+            finally
+              QUpdate.Free;
+            end;
+            SyncSuccess := True;
+          end
+          else if Response.StatusCode = 401 then
+          begin
+            AppSession.Logout;
+            ShowMessage('Сессия истекла. Войдите заново.');
+            DoLogin;
+            Exit;
+          end
+          else
+          begin
+            Inc(RetryCount);
+            if RetryCount > MAX_RETRY then
+            begin
+              QUpdate := TFDQuery.Create(nil);
+              try
+                QUpdate.Connection := dmLocDB.FDConnection1;
+                QUpdate.SQL.Text :=
+                  'UPDATE tasks SET upload_attempts = upload_attempts + 1, ' +
+                  'last_error = :err WHERE id = :id';
+                QUpdate.ParamByName('err').AsString := 'HTTP ' + IntToStr(Response.StatusCode);
+                QUpdate.ParamByName('id').AsInteger := TaskId;
+                QUpdate.ExecSQL;
+              finally
+                QUpdate.Free;
+              end;
+            end;
+            Sleep(1000 * RetryCount);
+          end;
+
+        finally
+          HTTP.Free;
+        end;
+      end;
 
       Query.Next;
     end;
 
-    Payload := TJSONObject.Create;
-    Payload.AddPair('AJsonData', JsonArr);
-
-    HTTP := THTTPClient.Create;
-    try
-      HTTP.ConnectionTimeout := 30000;
-      HTTP.ResponseTimeout := 60000;
-
-      // Принимаем самоподписанный сертификат (только для LAN/отладки)
-      HTTP.OnValidateServerCertificate := ValidateCert;
-
-      HTTP.CustomHeaders['X-Session-Token'] := AppSession.Token;
-      HTTP.ContentType := 'application/json';
-
-      PayloadStream := TStringStream.Create(Payload.ToString, TEncoding.UTF8);
-      try
-        Response := HTTP.Post(
-          AppSession.ServerURL + '/datasnap/rest/TServerMethods1/SyncUpload',
-          PayloadStream);
-
-        ResponseStr := Response.ContentAsString;
-
-        if Response.StatusCode = 200 then
-        begin
-          dmLocDB.FDConnection1.ExecSQL('UPDATE tasks SET is_synced = 1 WHERE is_synced = 0');
-          LoadTasks;
-          ShowMessage('Синхронизация успешна: ' + ResponseStr);
-        end
-        else if Response.StatusCode = 401 then
-        begin
-          AppSession.Logout;
-          ShowMessage('Ваша сессия истекла. Требуется повторный вход.');
-          DoLogin;
-        end
-        else
-        begin
-          ShowMessage('Ошибка сервера (Код: ' + IntToStr(Response.StatusCode) + '): ' + ResponseStr);
-        end;
-      finally
-        PayloadStream.Free;
-      end;
-    finally
-      HTTP.Free;
-    end;
+    LoadTasks;
+    ShowMessage('Синхронизация завершена.');
 
   finally
     Query.Free;
-    if Assigned(Payload) then
-      Payload.Free
-    else
-      JsonArr.Free;
   end;
 end;
 

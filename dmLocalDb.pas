@@ -1,4 +1,4 @@
-unit dmLocalDb;
+п»їunit dmLocalDb;
 
 interface
 
@@ -20,6 +20,7 @@ type
     procedure DataModuleCreate(Sender: TObject);
   private
     procedure InitDatabase;
+    procedure MigrateDatabase(FromVersion: Integer);
   public
     { Public declarations }
   end;
@@ -40,49 +41,83 @@ begin
   InitDatabase;
 end;
 
+procedure TdmLocDB.MigrateDatabase(FromVersion: Integer);
+begin
+  if FromVersion < 2 then
+  begin
+    try
+      FDConnection1.ExecSQL('ALTER TABLE tasks ADD COLUMN server_file_id TEXT');
+    except
+      // column may already exist
+    end;
+    try
+      FDConnection1.ExecSQL('ALTER TABLE tasks ADD COLUMN upload_attempts INTEGER DEFAULT 0');
+    except
+    end;
+    try
+      FDConnection1.ExecSQL('ALTER TABLE tasks ADD COLUMN last_error TEXT');
+    except
+    end;
+    try
+      FDConnection1.ExecSQL('ALTER TABLE tasks ADD COLUMN can_delete_local INTEGER DEFAULT 0');
+    except
+    end;
+    FDConnection1.ExecSQL('PRAGMA user_version = 2');
+  end;
+end;
+
 procedure TdmLocDB.InitDatabase;
 var
   DBPath: string;
+  DBVersion: Integer;
 begin
-  // 1. Определяем путь к БД
-  // На Android это будет /data/user/0/com.embarcadero.ProjectName/files/audit.sqlite
-  // На Windows это будет C:\Users\Alexandr\Documents\audit.sqlite
   DBPath := TPath.Combine(TPath.GetDocumentsPath, 'audit.sqlite');
 
   FDConnection1.Params.Clear;
   FDConnection1.Params.DriverID := 'SQLite';
   FDConnection1.Params.Database := DBPath;
-  // Важно для мобильных: не блокировать UI при длительных операциях
   FDConnection1.Params.Add('LockingMode=Normal');
   FDConnection1.Params.Add('Synchronous=Normal');
 
   try
     FDConnection1.Open;
 
-    // 2. Создаем таблицы
-    FDConnection1.ExecSQL(
-      'CREATE TABLE IF NOT EXISTS tasks (' +
-      '  id INTEGER PRIMARY KEY AUTOINCREMENT, ' +
-      '  title TEXT NOT NULL UNIQUE, ' +
-      '  description TEXT, ' +
-      '  status TEXT DEFAULT "new", ' +
-      '  latitude REAL DEFAULT 0.0, ' +   // <-- Новое поле
-      '  longitude REAL DEFAULT 0.0, ' +  // <-- Новое поле
-      '  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, ' +
-      '  is_synced INTEGER DEFAULT 0 ' +
-      ');'
-    );
+    try
+      DBVersion := FDConnection1.ExecSQLScalar('PRAGMA user_version');
+    except
+      DBVersion := 0;
+    end;
 
-    // Для отладки добавим пару тестовых записей, если таблица пуста
-    FDConnection1.ExecSQL('INSERT OR IGNORE INTO tasks (title, description) VALUES ("Проверка склада А", "Проверить наличие огнетушителей");');
-    FDConnection1.ExecSQL('INSERT OR IGNORE INTO tasks (title, description) VALUES ("Обход периметра", "Проверить целостность забора");');
+    if DBVersion < 1 then
+    begin
+      FDConnection1.ExecSQL(
+        'CREATE TABLE IF NOT EXISTS tasks (' +
+        '  id INTEGER PRIMARY KEY AUTOINCREMENT, ' +
+        '  title TEXT NOT NULL UNIQUE, ' +
+        '  description TEXT, ' +
+        '  status TEXT DEFAULT "new", ' +
+        '  latitude REAL DEFAULT 0.0, ' +
+        '  longitude REAL DEFAULT 0.0, ' +
+        '  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, ' +
+        '  is_synced INTEGER DEFAULT 0, ' +
+        '  server_file_id TEXT, ' +
+        '  upload_attempts INTEGER DEFAULT 0, ' +
+        '  last_error TEXT, ' +
+        '  can_delete_local INTEGER DEFAULT 0 ' +
+        ');'
+      );
+      FDConnection1.ExecSQL('PRAGMA user_version = 1');
+    end;
+
+    if DBVersion < 2 then
+      MigrateDatabase(DBVersion);
+
+    FDConnection1.ExecSQL('INSERT OR IGNORE INTO tasks (title, description) VALUES ("РРЅСЃРїРµРєС†РёСЏ СѓС‡Р°СЃС‚РєР° Рђ", "РџСЂРѕРІРµСЂРєР° СЃРѕСЃС‚РѕСЏРЅРёСЏ РѕР±РѕСЂСѓРґРѕРІР°РЅРёСЏ");');
+    FDConnection1.ExecSQL('INSERT OR IGNORE INTO tasks (title, description) VALUES ("РћР±С…РѕРґ С‚РµСЂСЂРёС‚РѕСЂРёРё", "РџСЂРѕРІРµСЂРєР° РѕРіСЂР°Р¶РґРµРЅРёР№ Рё РІС‹РІРµСЃРѕРє");');
 
   except
     on E: Exception do
-    begin
-      // В мобильном приложении критично показать ошибку при старте
-      raise Exception.Create('Ошибка инициализации БД: ' + E.Message);
-    end;
+      raise Exception.Create('РћС€РёР±РєР° РёРЅРёС†РёР°Р»РёР·Р°С†РёРё Р‘Р”: ' + E.Message);
   end;
 end;
 
