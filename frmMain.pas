@@ -60,7 +60,14 @@ var
 
 implementation
 
-uses dmLocalDb, frmPhotoView, SessionManager, uLogin;
+uses
+  {$IFDEF ANDROID}
+  Androidapi.JNI.JavaTypes, Androidapi.Helpers, Androidapi.JNI.Os,
+  {$ENDIF}
+  {$IFDEF MSWINDOWS}
+  Windows,
+  {$ENDIF}
+  dmLocalDb, frmPhotoView, SessionManager, uLogin;
 
 {$R *.fmx}
 
@@ -288,11 +295,52 @@ begin
   ShowMessage('Съемка отменена');
 end;
 
+function GetFreeSpaceBytes(const Path: string): Int64;
+{$IFDEF ANDROID}
+var
+  FileObj: JFile;
+begin
+  FileObj := TJFile.JavaClass.init(StringToJString(Path));
+  Result := FileObj.getFreeSpace;
+end;
+{$ENDIF}
+{$IFDEF MSWINDOWS}
+var
+  FreeAvailable: Int64;
+  TotalSpace: Int64;
+  TotalFree: Int64;
+  PathStr: string;
+begin
+  PathStr := IncludeTrailingPathDelimiter(Path);
+  if GetDiskFreeSpaceEx(PChar(PathStr), FreeAvailable, TotalSpace, @TotalFree) then
+    Result := FreeAvailable
+  else
+    Result := 0;
+end;
+{$ENDIF}
+{$IFNDEF ANDROID}{$IFNDEF MSWINDOWS}
+begin
+  Result := High(Int64); // Fallback for other platforms
+end;
+{$ENDIF}{$ENDIF}
+
 procedure TformMain.DoDidFinish(Image: TBitmap);
+const
+  MIN_FREE_SPACE = 50 * 1024 * 1024; // 50 MB
 var
   Dir, FileName: string;
+  FreeSpace: Int64;
 begin
   try
+    // Проверка свободного места перед сохранением
+    FreeSpace := GetFreeSpaceBytes(System.IOUtils.TPath.GetDocumentsPath);
+    if FreeSpace < MIN_FREE_SPACE then
+    begin
+      ShowMessage(Format('Недостаточно места для сохранения фото. Свободно: %d МБ, требуется: %d МБ',
+        [FreeSpace div (1024 * 1024), MIN_FREE_SPACE div (1024 * 1024)]));
+      Exit;
+    end;
+
     Dir := System.IOUtils.TPath.Combine(System.IOUtils.TPath.GetDocumentsPath, 'photos');
     if not TDirectory.Exists(Dir) then
       TDirectory.CreateDirectory(Dir);
