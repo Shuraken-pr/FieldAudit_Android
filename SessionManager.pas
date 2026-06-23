@@ -9,6 +9,7 @@ type
   TSessionManager = class
   private
     FToken: string;
+    FUserID: Int64;  // 🔑 Добавлен user_id из токена/логина
     FServerURL: string;
     FConfigFile: string;
     procedure SetServerURL(const Value: string);
@@ -17,6 +18,7 @@ type
   public
     constructor Create;
     property Token: string read FToken write FToken;
+    property UserID: Int64 read FUserID write FUserID;  // 🔑 user_id сервера
     property ServerURL: string read FServerURL write SetServerURL;
     function IsLoggedIn: Boolean;
     procedure Logout;
@@ -32,6 +34,7 @@ implementation
 constructor TSessionManager.Create;
 begin
   FToken := '';
+  FUserID := 0;  // 🔑 user_id по умолчанию 0 (не залогинен)
   FConfigFile := TPath.Combine(TPath.GetDocumentsPath, 'server_url.txt');
   LoadURL;
 end;
@@ -63,6 +66,7 @@ end;
 procedure TSessionManager.Logout;
 begin
   FToken := '';
+  FUserID := 0;  // 🔑 Сбрасываем user_id при выходе
 end;
 
 initialization

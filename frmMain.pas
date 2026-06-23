@@ -1,4 +1,4 @@
-﻿unit frmMain;
+unit frmMain;
 
 interface
 
@@ -84,7 +84,7 @@ var
   PhotoPath, CompressedPath, FileName, UploadURL, JsonMeta: string;
   RetryCount: Integer;
   SyncSuccess: Boolean;
-  TaskId: Integer;
+  TaskId: Int64;
   BatchUUID: string;
 begin
   if not AppSession.IsLoggedIn then
@@ -111,7 +111,7 @@ begin
 
     while not Query.Eof do
     begin
-      TaskId := Query.FieldByName('id').AsInteger;
+      TaskId := Query.FieldByName('id').AsLargeInt;
       PhotoPath := Query.FieldByName('description').AsString;
       RetryCount := 0;
       SyncSuccess := False;
@@ -125,21 +125,6 @@ begin
           HTTP.ResponseTimeout := 120000;
 
           HTTP.OnValidateServerCertificate := ValidateCert;
-
-          // Формируем metadata
-          Metadata := TJSONObject.Create;
-          try
-            Metadata.AddPair('event_type', 'mobile_audit');
-            Metadata.AddPair('occurred_at', DateToISO8601(Now));
-            Metadata.AddPair('lat', TJSONNumber.Create(Query.FieldByName('latitude').AsFloat));
-            Metadata.AddPair('lon', TJSONNumber.Create(Query.FieldByName('longitude').AsFloat));
-            Metadata.AddPair('title', Query.FieldByName('title').AsString);
-            Metadata.AddPair('device_id', 'android');
-            Metadata.AddPair('batch_id', BatchUUID);
-            JsonMeta := Metadata.ToString;
-          finally
-            Metadata.Free;
-          end;
 
           // JSON payload с metadata и фото в Base64 (избегает проблем multipart/кодировок)
           if TFile.Exists(PhotoPath) then
@@ -176,7 +161,7 @@ begin
             Metadata.Free;
           end;
 
-          HTTP.ContentType := 'application/json';
+          HTTP.CustomHeaders['Content-Type'] := 'application/json';
           HTTP.CustomHeaders['X-Session-Token'] := AppSession.Token;
           UploadURL := AppSession.ServerURL + '/upload';
 

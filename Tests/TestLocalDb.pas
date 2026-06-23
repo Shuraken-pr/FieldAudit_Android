@@ -5,8 +5,8 @@ interface
 uses
   DUnitX.TestFramework,
   System.SysUtils,
+  System.Classes,
   System.IOUtils,
-  Winapi.Windows,
   Data.DB,
   FireDAC.DApt,
   FireDAC.Comp.Client,
@@ -18,7 +18,7 @@ uses
 type
   // Тестовая запись для задачи
   TTaskRecord = record
-    Id: Integer;
+    Id: Int64;
     Title: string;
     Description: string;
     Latitude: Double;
@@ -71,7 +71,7 @@ implementation
 procedure TTestLocalDb.Setup;
 begin
   FTestDbPath := TPath.Combine(TPath.GetTempPath, 'test_local_' + 
-    IntToStr(GetTickCount) + '.db');
+    IntToStr(TThread.GetTickCount64) + '.db');
   
   FConnection := TFDConnection.Create(nil);
   FConnection.Params.Database := FTestDbPath;
@@ -108,11 +108,17 @@ begin
     Qry.SQL.Text := 
       'CREATE TABLE IF NOT EXISTS tasks (' +
       '  id INTEGER PRIMARY KEY AUTOINCREMENT,' +
-      '  title TEXT NOT NULL,' +
+      '  title TEXT NOT NULL UNIQUE,' +
       '  description TEXT,' +
-      '  latitude REAL,' +
-      '  longitude REAL,' +
-      '  is_synced INTEGER DEFAULT 0' +
+      '  status TEXT DEFAULT "new",' +
+      '  latitude REAL DEFAULT 0.0,' +
+      '  longitude REAL DEFAULT 0.0,' +
+      '  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,' +
+      '  is_synced INTEGER DEFAULT 0,' +
+      '  server_file_id TEXT,' +
+      '  upload_attempts INTEGER DEFAULT 0,' +
+      '  last_error TEXT,' +
+      '  can_delete_local INTEGER DEFAULT 0' +
       ')';
     Qry.ExecSQL;
   finally
@@ -128,7 +134,7 @@ end;
 procedure TTestLocalDb.TestCreateTask;
 var
   Qry: TFDQuery;
-  TaskId: Integer;
+  TaskId: Int64;
 begin
   Qry := TFDQuery.Create(nil);
   try
@@ -145,7 +151,7 @@ begin
     // Получаем ID последней вставленной записи
     Qry.SQL.Text := 'SELECT last_insert_rowid() as id';
     Qry.Open;
-    TaskId := Qry.FieldByName('id').AsInteger;
+    TaskId := Qry.FieldByName('id').AsLargeInt;
     
     Assert.IsTrue(TaskId > 0, 'ID задачи должен быть положительным');
   finally
@@ -190,7 +196,7 @@ end;
 procedure TTestLocalDb.TestUpdateTask;
 var
   Qry: TFDQuery;
-  TaskId: Integer;
+  TaskId: Int64;
   UpdatedTitle: string;
 begin
   // Создаём задачу
@@ -207,18 +213,18 @@ begin
     
     Qry.SQL.Text := 'SELECT last_insert_rowid() as id';
     Qry.Open;
-    TaskId := Qry.FieldByName('id').AsInteger;
+    TaskId := Qry.FieldByName('id').AsLargeInt;
     
     // Обновляем задачу
     Qry.SQL.Text := 'UPDATE tasks SET title = :t, latitude = :la WHERE id = :id';
     Qry.ParamByName('t').AsString := 'Updated';
     Qry.ParamByName('la').AsFloat := 55.76;
-    Qry.ParamByName('id').AsInteger := TaskId;
+    Qry.ParamByName('id').AsLargeInt := TaskId;
     Qry.ExecSQL;
     
     // Проверяем обновление
     Qry.SQL.Text := 'SELECT title, latitude FROM tasks WHERE id = :id';
-    Qry.ParamByName('id').AsInteger := TaskId;
+    Qry.ParamByName('id').AsLargeInt := TaskId;
     Qry.Open;
     
     UpdatedTitle := Qry.FieldByName('title').AsString;
@@ -265,7 +271,7 @@ end;
 procedure TTestLocalDb.TestMarkAsSynced;
 var
   Qry: TFDQuery;
-  TaskId: Integer;
+  TaskId: Int64;
   UnsyncedCount: Integer;
 begin
   Qry := TFDQuery.Create(nil);
@@ -282,7 +288,7 @@ begin
     
     Qry.SQL.Text := 'SELECT last_insert_rowid() as id';
     Qry.Open;
-    TaskId := Qry.FieldByName('id').AsInteger;
+    TaskId := Qry.FieldByName('id').AsLargeInt;
     
     // Проверяем, что задача несинхронизирована
     Qry.SQL.Text := 'SELECT COUNT(*) as cnt FROM tasks WHERE is_synced = 0';
@@ -292,7 +298,7 @@ begin
     
     // Помечаем как синхронизированную
     Qry.SQL.Text := 'UPDATE tasks SET is_synced = 1 WHERE id = :id';
-    Qry.ParamByName('id').AsInteger := TaskId;
+    Qry.ParamByName('id').AsLargeInt := TaskId;
     Qry.ExecSQL;
     
     // Проверяем, что несинхронизированных задач нет
@@ -308,7 +314,7 @@ end;
 procedure TTestLocalDb.TestGetUnsyncedTasks;
 var
   Qry: TFDQuery;
-  Id1: Integer;
+  Id1: Int64;
   UnsyncedCount: Integer;
 begin
   Qry := TFDQuery.Create(nil);
@@ -325,7 +331,7 @@ begin
     
     Qry.SQL.Text := 'SELECT last_insert_rowid() as id';
     Qry.Open;
-    Id1 := Qry.FieldByName('id').AsInteger;
+    Id1 := Qry.FieldByName('id').AsLargeInt;
     
     Qry.SQL.Text := 'INSERT INTO tasks (title, description, latitude, longitude) VALUES (:t, :d, :la, :lo)';
     Qry.ParamByName('t').AsString := 'Task 2';
@@ -336,7 +342,7 @@ begin
     
     // Помечаем первую как синхронизированную
     Qry.SQL.Text := 'UPDATE tasks SET is_synced = 1 WHERE id = :id';
-    Qry.ParamByName('id').AsInteger := Id1;
+    Qry.ParamByName('id').AsLargeInt := Id1;
     Qry.ExecSQL;
     
     // Считаем несинхронизированные

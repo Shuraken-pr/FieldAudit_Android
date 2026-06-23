@@ -1,4 +1,4 @@
-﻿unit uLogin;
+unit uLogin;
 
 interface
 
@@ -98,6 +98,10 @@ begin
                     Token := InnerObj.GetValue('token').Value;
 
                   AppSession.Token := Token;
+
+                  // 🔑 Сохраняем user_id из ответа сервера
+                  if InnerObj.GetValue('user_id') <> nil then
+                    AppSession.UserID := StrToInt64(InnerObj.GetValue('user_id').Value);
 
                   if Assigned(FOnLoginSuccess) then
                   begin
