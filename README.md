@@ -265,6 +265,39 @@ server {
 }
 ```
 
+**X-Forwarded-For — реальный IP клиента:**
+Когда Nginx проксирует запрос на DataSnap, все запросы приходят с IP `127.0.0.1`. Чтобы `RateLimiter` на сервере корректно считал лимиты по реальным клиентам (а не блокировал всех как один IP), Nginx передаёт оригинальный IP через заголовок `X-Forwarded-For`:
+
+```nginx
+proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+```
+
+На DataSnap-сервере реальный IP извлекается из заголовка:
+
+```pascal
+function TWebModule1.GetRealClientIP: string;
+var
+  XForwardedFor: string;
+  P: Integer;
+begin
+  Result := string(Request.RemoteAddr); // 127.0.0.1 через Nginx
+  
+  if (Result = '127.0.0.1') or (Result = '::1') then
+  begin
+    XForwardedFor := string(Request.GetFieldByName('X-Forwarded-For'));
+    if XForwardedFor <> '' then
+    begin
+      // X-Forwarded-For: client, proxy1, proxy2 — берём первый IP
+      P := Pos(',', XForwardedFor);
+      if P > 0 then
+        Result := Trim(Copy(XForwardedFor, 1, P - 1))
+      else
+        Result := Trim(XForwardedFor); // 192.168.1.114
+    end;
+  end;
+end;
+```
+
 **Преимущества Nginx как reverse proxy:**
 - 🔑 **Логирование** — все запросы от клиентов пишутся в `logs/access.log` (IP, URL, статус, время ответа)
 - 🛡️ **Единая точка входа** — порт 80 для всех клиентов, DataSnap скрыт внутри (порт 8082 только на localhost)

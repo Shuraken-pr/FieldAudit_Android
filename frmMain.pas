@@ -215,6 +215,17 @@ begin
               DoLogin;
               Exit;
             end
+            else if Response.StatusCode = 429 then
+            begin
+              ShowMessage('Ошибка 429: Слишком много запросов.' + sLineBreak +
+                'Возможные причины:' + sLineBreak +
+                '1. На порту 80 работает не Nginx, а другой сервис (IIS Windows)' + sLineBreak +
+                '2. Nginx не перезапущен со старым конфигом' + sLineBreak +
+                '3. Rate limiting на сервере' + sLineBreak + sLineBreak +
+                'Решение: проверьте, что Nginx слушает порт 80' + sLineBreak +
+                'Или используйте подключение напрямую: 192.168.1.113:8082');
+              Exit;
+            end
             else
             begin
               Inc(RetryCount);
