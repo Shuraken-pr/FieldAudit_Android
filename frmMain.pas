@@ -1,4 +1,4 @@
-﻿unit frmMain;
+unit frmMain;
 
 interface
 
@@ -13,7 +13,7 @@ uses
   FireDAC.Stan.Param, FireDAC.Stan.Error, FireDAC.DatS, FireDAC.Phys.Intf,
   FireDAC.DApt.Intf, FireDAC.Stan.Async, FireDAC.DApt, Data.DB,
   FireDAC.Comp.DataSet, FireDAC.Comp.Client, System.ImageList, FMX.ImgList,
-  System.Net.HttpClient, System.Net.URLClient, System.Net.Mime,
+  System.Net.HttpClient, System.Net.URLClient, System.Net.Mime, System.Hash,
   System.DateUtils, JpegUtils, System.NetEncoding, System.NetConsts;
 
 type
@@ -43,14 +43,15 @@ type
     procedure FormClose(Sender: TObject; var Action: TCloseAction);
   private
     FLoadedOnce: Boolean;
+    FPinVerified: Boolean;
     FCurrentLat, FCurrentLon: Double;
     procedure LoadTasks;
     procedure DoDidFinish(Image: TBitmap);
     procedure DoDidCancel;
     procedure DoLogin;
-    procedure ValidateCert(
-      const Sender: TObject; const ARequest: TURLRequest;
-      const Certificate: TCertificate; var Accepted: Boolean);
+    procedure CheckAndRequestPIN;
+    procedure OnPINSet(const PIN: string);
+    procedure OnPINEntered(const PIN: string);
   public
     { Public declarations }
   end;
@@ -67,7 +68,8 @@ uses
   {$IFDEF MSWINDOWS}
   Windows,
   {$ENDIF}
-  dmLocalDb, frmPhotoView, SessionManager, uLogin;
+  dmLocalDb, frmPhotoView, SessionManager, uLogin, DatabaseKeyManager,
+  frmSetPIN, frmEnterPIN;
 
 {$R *.fmx}
 
@@ -86,6 +88,7 @@ var
   SyncSuccess: Boolean;
   TaskId: Int64;
   BatchUUID: string;
+  Base64Encoder: TBase64Encoding;
 begin
   if not AppSession.IsLoggedIn then
   begin
@@ -93,6 +96,17 @@ begin
     DoLogin;
     Exit;
   end;
+
+  if Trim(AppSession.ServerURL) = '' then
+  begin
+    ShowMessage('Адрес сервера не задан.' + sLineBreak +
+      'Войдите в систему и укажите адрес сервера (например: 192.168.1.113:8082)');
+    DoLogin;
+    Exit;
+  end;
+
+  // 🔑 ОТЛАДКА: показываем URL сервера перед синхронизацией
+  ShowMessage('Синхронизация с сервером:' + sLineBreak + AppSession.ServerURL);
 
   Query := TFDQuery.Create(nil);
   Query.Connection := dmLocDB.FDConnection1;
@@ -112,7 +126,7 @@ begin
     while not Query.Eof do
     begin
       TaskId := Query.FieldByName('id').AsLargeInt;
-      PhotoPath := Query.FieldByName('description').AsString;
+      PhotoPath := TDatabaseKeyManager.DecryptField(Query.FieldByName('description').AsString);
       RetryCount := 0;
       SyncSuccess := False;
       BatchUUID := TGUID.NewGuid.ToString;
@@ -121,98 +135,155 @@ begin
       begin
         HTTP := THTTPClient.Create;
         try
-          HTTP.ConnectionTimeout := 30000;
-          HTTP.ResponseTimeout := 120000;
-
-          HTTP.OnValidateServerCertificate := ValidateCert;
-
-          // JSON payload с metadata и фото в Base64 (избегает проблем multipart/кодировок)
-          if TFile.Exists(PhotoPath) then
-          begin
-            FileName := System.IOUtils.TPath.GetFileName(PhotoPath);
-            CompressedPath := System.IOUtils.TPath.Combine(System.IOUtils.TPath.GetTempPath, 'cmp_' + FileName);
-
-            if CompressPhoto(PhotoPath, CompressedPath, 1920, 85) then
-              PhotoBytes := TFile.ReadAllBytes(CompressedPath)
-            else
-              PhotoBytes := TFile.ReadAllBytes(PhotoPath);
-          end
-          else
-          begin
-            SetLength(PhotoBytes, 0);
-          end;
-
-          Metadata := TJSONObject.Create;
           try
-            Metadata.AddPair('event_type', 'mobile_audit');
-            Metadata.AddPair('occurred_at', DateToISO8601(Now));
-            Metadata.AddPair('lat', TJSONNumber.Create(Query.FieldByName('latitude').AsFloat));
-            Metadata.AddPair('lon', TJSONNumber.Create(Query.FieldByName('longitude').AsFloat));
-            Metadata.AddPair('title', Query.FieldByName('title').AsString);
-            Metadata.AddPair('device_id', 'android');
-            Metadata.AddPair('batch_id', BatchUUID);
-            if Length(PhotoBytes) > 0 then
+            HTTP.ConnectionTimeout := 30000;
+            HTTP.ResponseTimeout := 120000;
+
+            // 🔑 Убран OnValidateServerCertificate для HTTP — избегаем SSL-инициализации на Android
+
+            // JSON payload с metadata и фото в Base64 (избегает проблем multipart/кодировок)
+            if TFile.Exists(PhotoPath) then
             begin
-              Metadata.AddPair('photo_base64', TNetEncoding.Base64.EncodeBytesToString(PhotoBytes));
-              Metadata.AddPair('photo_filename', FileName);
+              FileName := System.IOUtils.TPath.GetFileName(PhotoPath);
+              CompressedPath := System.IOUtils.TPath.Combine(System.IOUtils.TPath.GetTempPath, 'cmp_' + FileName);
+
+              if CompressPhoto(PhotoPath, CompressedPath, 1920, 85) then
+                PhotoBytes := TFile.ReadAllBytes(CompressedPath)
+              else
+                PhotoBytes := TFile.ReadAllBytes(PhotoPath);
+            end
+            else
+            begin
+              SetLength(PhotoBytes, 0);
             end;
-            JsonMeta := Metadata.ToString;
-          finally
-            Metadata.Free;
-          end;
 
-          HTTP.CustomHeaders['Content-Type'] := 'application/json';
-          HTTP.CustomHeaders['X-Session-Token'] := AppSession.Token;
-          UploadURL := AppSession.ServerURL + '/upload';
-
-          PayloadStream := TStringStream.Create(JsonMeta, TEncoding.UTF8);
-          try
-            Response := HTTP.Post(UploadURL, PayloadStream);
-          finally
-            PayloadStream.Free;
-          end;
-
-          if Response.StatusCode = 200 then
-          begin
-            QUpdate := TFDQuery.Create(nil);
+            Metadata := TJSONObject.Create;
             try
-              QUpdate.Connection := dmLocDB.FDConnection1;
-              QUpdate.SQL.Text :=
-                'UPDATE tasks SET is_synced = 1, upload_attempts = upload_attempts + 1, ' +
-                'last_error = NULL, can_delete_local = 0 WHERE id = :id';
-              QUpdate.ParamByName('id').AsInteger := TaskId;
-              QUpdate.ExecSQL;
+              Metadata.AddPair('event_type', 'mobile_audit');
+              Metadata.AddPair('occurred_at', DateToISO8601(Now));
+              Metadata.AddPair('lat', TJSONNumber.Create(Query.FieldByName('latitude').AsFloat));
+              Metadata.AddPair('lon', TJSONNumber.Create(Query.FieldByName('longitude').AsFloat));
+              Metadata.AddPair('title', TDatabaseKeyManager.DecryptField(Query.FieldByName('title').AsString));
+              Metadata.AddPair('device_id', 'android');
+              Metadata.AddPair('batch_id', BatchUUID);
+              if Length(PhotoBytes) > 0 then
+              begin
+                // 🔑 Base64 без переносов строк (иначе сервер не сможет декодировать после JSON)
+                Base64Encoder := TBase64Encoding.Create(0);
+                try
+                  Metadata.AddPair('photo_base64', Base64Encoder.EncodeBytesToString(PhotoBytes));
+                finally
+                  Base64Encoder.Free;
+                end;
+                Metadata.AddPair('photo_filename', FileName);
+              end;
+              JsonMeta := Metadata.ToString;
             finally
-              QUpdate.Free;
+              Metadata.Free;
             end;
-            SyncSuccess := True;
-          end
-          else if Response.StatusCode = 401 then
-          begin
-            AppSession.Logout;
-            ShowMessage('Сессия истекла. Войдите заново.');
-            DoLogin;
-            Exit;
-          end
-          else
-          begin
-            Inc(RetryCount);
-            if RetryCount > MAX_RETRY then
+
+            HTTP.CustomHeaders['Content-Type'] := 'application/json';
+            HTTP.CustomHeaders['X-Session-Token'] := AppSession.Token;
+            UploadURL := AppSession.ServerURL + '/upload';
+
+            PayloadStream := TStringStream.Create(JsonMeta, TEncoding.UTF8);
+            try
+              Response := HTTP.Post(UploadURL, PayloadStream);
+            finally
+              PayloadStream.Free;
+            end;
+
+            if Response.StatusCode = 200 then
             begin
               QUpdate := TFDQuery.Create(nil);
               try
                 QUpdate.Connection := dmLocDB.FDConnection1;
                 QUpdate.SQL.Text :=
-                  'UPDATE tasks SET upload_attempts = upload_attempts + 1, ' +
-                  'last_error = :err WHERE id = :id';
-                QUpdate.ParamByName('err').AsString := 'HTTP ' + IntToStr(Response.StatusCode);
+                  'UPDATE tasks SET is_synced = 1, upload_attempts = upload_attempts + 1, ' +
+                  'last_error = NULL, can_delete_local = 0 WHERE id = :id';
                 QUpdate.ParamByName('id').AsInteger := TaskId;
                 QUpdate.ExecSQL;
               finally
                 QUpdate.Free;
               end;
+              SyncSuccess := True;
+            end
+            else if Response.StatusCode = 401 then
+            begin
+              AppSession.Logout;
+              ShowMessage('Сессия истекла. Войдите заново.');
+              DoLogin;
+              Exit;
+            end
+            else
+            begin
+              Inc(RetryCount);
+              if RetryCount > MAX_RETRY then
+              begin
+                QUpdate := TFDQuery.Create(nil);
+                try
+                  QUpdate.Connection := dmLocDB.FDConnection1;
+                  QUpdate.SQL.Text :=
+                    'UPDATE tasks SET upload_attempts = upload_attempts + 1, ' +
+                    'last_error = :err WHERE id = :id';
+                  QUpdate.ParamByName('err').AsString := 'HTTP ' + IntToStr(Response.StatusCode);
+                  QUpdate.ParamByName('id').AsInteger := TaskId;
+                  QUpdate.ExecSQL;
+                finally
+                  QUpdate.Free;
+                end;
+              end;
+              Sleep(1000 * RetryCount);
             end;
-            Sleep(1000 * RetryCount);
+          except
+            on E: Exception do
+            begin
+              Inc(RetryCount);
+              if RetryCount > MAX_RETRY then
+              begin
+                QUpdate := TFDQuery.Create(nil);
+                try
+                  QUpdate.Connection := dmLocDB.FDConnection1;
+                  QUpdate.SQL.Text :=
+                    'UPDATE tasks SET upload_attempts = upload_attempts + 1, ' +
+                    'last_error = :err WHERE id = :id';
+                  if (Pos('SSL', E.Message) > 0) or (Pos('Certificate', E.Message) > 0) or
+                     (Pos('Trust anchor', E.Message) > 0) or (Pos('Hostname', E.Message) > 0) or
+                     (Pos('Peer', E.Message) > 0) or (Pos('cert', E.Message) > 0) then
+                  begin
+                    QUpdate.ParamByName('err').AsString := 'SSL_ERROR: ' + E.Message;
+                    ShowMessage('Ошибка SSL-соединения.' + sLineBreak +
+                      'Возможные причины:' + sLineBreak +
+                      '1. Самоподписанный сертификат не установлен на устройстве' + sLineBreak +
+                      '2. Сертификат не содержит IP-адрес в SAN (Subject Alternative Name)' + sLineBreak +
+                      '3. Неверная дата/время на устройстве' + sLineBreak + sLineBreak +
+                      'Текст ошибки: ' + E.Message);
+                  end
+                  else if (Pos('SocketTimeout', E.Message) > 0) or
+                          (Pos('timeout', LowerCase(E.Message)) > 0) or
+                          (Pos('failed to connect', LowerCase(E.Message)) > 0) or
+                          (Pos('connection refused', LowerCase(E.Message)) > 0) then
+                  begin
+                    QUpdate.ParamByName('err').AsString := 'NETWORK_TIMEOUT: ' + E.Message;
+                    ShowMessage('Не удалось подключиться к серверу.' + sLineBreak +
+                      'Адрес: ' + AppSession.ServerURL + sLineBreak + sLineBreak +
+                      'Проверьте:' + sLineBreak +
+                      '1. Сервер запущен на ПК' + sLineBreak +
+                      '2. Телефон и ПК в одной Wi-Fi сети' + sLineBreak +
+                      '3. Файрвол Windows не блокирует порт (cmd: netsh advfirewall firewall add rule name="DataSnap" dir=in action=allow protocol=tcp localport=8082)' + sLineBreak +
+                      '4. IP-адрес сервера верный (ipconfig на ПК)' + sLineBreak + sLineBreak +
+                      'Текст ошибки: ' + E.Message);
+                  end
+                  else
+                    QUpdate.ParamByName('err').AsString := E.Message;
+                  QUpdate.ParamByName('id').AsInteger := TaskId;
+                  QUpdate.ExecSQL;
+                finally
+                  QUpdate.Free;
+                end;
+              end;
+              Sleep(1000 * RetryCount);
+            end;
           end;
 
         finally
@@ -336,7 +407,8 @@ begin
 
     dmLocDB.FDConnection1.ExecSQL(
       'INSERT INTO tasks (title, description, status, latitude, longitude) VALUES (?, ?, ?, ?, ?)',
-     ['Фото-отчет ' + FormatDateTime('hh_mm_ss', Now), FileName, 'new', FCurrentLat, FCurrentLon]);
+     [TDatabaseKeyManager.EncryptField('Фото-отчет ' + FormatDateTime('hh_mm_ss', Now)),
+      TDatabaseKeyManager.EncryptField(FileName), 'new', FCurrentLat, FCurrentLon]);
 
     LoadTasks;
     ShowMessage('Фото успешно сохранено!');
@@ -359,7 +431,9 @@ end;
 
 procedure TformMain.FormActivate(Sender: TObject);
 begin
-  if not FLoadedOnce then
+  if not FPinVerified then
+    CheckAndRequestPIN;
+  if not FLoadedOnce and FPinVerified then
   begin
     LoadTasks;
     FLoadedOnce := True;
@@ -370,6 +444,12 @@ procedure TformMain.FormClose(Sender: TObject; var Action: TCloseAction);
 begin
   if Assigned(formPhotoView) then
     FreeAndNil(formPhotoView);
+  if Assigned(frmLogin) then
+    FreeAndNil(frmLogin);
+  if Assigned(frEnterPIN) then
+    FreeAndNil(frEnterPIN);
+  if Assigned(frSetPIN) then
+    FreeAndNil(frSetPIN);
 end;
 
 procedure TformMain.FormCreate(Sender: TObject);
@@ -385,7 +465,158 @@ begin
     wbMaps.Navigate('about:blank');
 
   FLoadedOnce := false;
-  LoadTasks;
+  FPinVerified := false;
+end;
+
+procedure TformMain.CheckAndRequestPIN;
+const
+  PIN_HASH_KEY = 'pin_hash';
+  PIN_SALT_KEY = 'pin_salt';
+
+  function HasPINStored: Boolean;
+  var
+    PINHash, PINSalt: string;
+  begin
+    PINHash := TDatabaseKeyManager.GetSharedPrefString(PIN_HASH_KEY, '');
+    PINSalt := TDatabaseKeyManager.GetSharedPrefString(PIN_SALT_KEY, '');
+    Result := (PINHash <> '') and (PINSalt <> '');
+  end;
+
+  procedure ShowPINSetup;
+  begin
+    if not Assigned(frSetPIN) then
+      frSetPIN := TfrSetPIN.Create(nil);
+    frSetPIN.OnPINSet := procedure(PIN: string)
+    begin
+      OnPINSet(PIN);
+    end;
+    frSetPIN.Show;
+  end;
+
+  procedure ShowPINEnter;
+  begin
+    if not Assigned(frEnterPIN) then
+      frEnterPIN := TfrEnterPIN.Create(nil);
+    frEnterPIN.OnPINEntered := procedure(PIN: string)
+    begin
+      OnPINEntered(PIN);
+    end;
+    frEnterPIN.Show;
+  end;
+
+begin
+  if HasPINStored then
+    ShowPINEnter
+  else
+    ShowPINSetup;
+end;
+
+procedure TformMain.OnPINSet(const PIN: string);
+const
+  PIN_HASH_KEY = 'pin_hash';
+  PIN_SALT_KEY = 'pin_salt';
+var
+  Salt, PINHash: string;
+  Hash: THashSHA2;
+  HashBytes: TBytes;
+  I: Integer;
+  Combined: string;
+  DeviceID: string;
+begin
+  if Length(PIN) < 4 then
+  begin
+    ShowMessage('PIN должен содержать минимум 4 цифры');
+    CheckAndRequestPIN;
+    Exit;
+  end;
+
+  Salt := TGUID.NewGuid.ToString;
+  DeviceID := TDatabaseKeyManager.GetAndroidDeviceID;
+  Combined := PIN + DeviceID + Salt;
+  Hash := THashSHA2.Create;
+  Hash.Update(TEncoding.UTF8.GetBytes(Combined));
+  HashBytes := Hash.HashAsBytes;
+
+  PINHash := '';
+  for I := 0 to Length(HashBytes) - 1 do
+    PINHash := PINHash + IntToHex(HashBytes[I], 2);
+
+  TDatabaseKeyManager.SetSharedPrefString(PIN_SALT_KEY, Salt);
+  TDatabaseKeyManager.SetSharedPrefString(PIN_HASH_KEY, PINHash);
+
+  try
+    // 🔑 Application-level encryption: храним PIN в памяти для шифрования/дешифрования полей
+    TDatabaseKeyManager.SetCurrentPIN(PIN);
+
+    if not TFile.Exists(System.IOUtils.TPath.Combine(System.IOUtils.TPath.GetDocumentsPath, 'audit.sqlite')) then
+    begin
+      dmLocDB.InitDatabase;
+    end;
+
+    FPinVerified := True;
+    LoadTasks;
+  except
+    on E: Exception do
+    begin
+      ShowMessage('Ошибка инициализации базы данных: ' + E.Message);
+      CheckAndRequestPIN;
+    end;
+  end;
+end;
+
+procedure TformMain.OnPINEntered(const PIN: string);
+const
+  PIN_HASH_KEY = 'pin_hash';
+  PIN_SALT_KEY = 'pin_salt';
+var
+  StoredHash, Salt, PINHash: string;
+  Hash: THashSHA2;
+  HashBytes: TBytes;
+  I: Integer;
+  Combined: string;
+  DeviceID: string;
+  IsValid: Boolean;
+begin
+  StoredHash := TDatabaseKeyManager.GetSharedPrefString(PIN_HASH_KEY, '');
+  Salt := TDatabaseKeyManager.GetSharedPrefString(PIN_SALT_KEY, '');
+
+  DeviceID := TDatabaseKeyManager.GetAndroidDeviceID;
+  Combined := PIN + DeviceID + Salt;
+  Hash := THashSHA2.Create;
+  Hash.Update(TEncoding.UTF8.GetBytes(Combined));
+  HashBytes := Hash.HashAsBytes;
+
+  PINHash := '';
+  for I := 0 to Length(HashBytes) - 1 do
+    PINHash := PINHash + IntToHex(HashBytes[I], 2);
+
+  IsValid := (StoredHash <> '') and (StoredHash = PINHash);
+  if IsValid then
+  begin
+    try
+      // 🔑 Application-level encryption: сохраняем PIN в памяти для дешифрования полей
+      TDatabaseKeyManager.SetCurrentPIN(PIN);
+
+      if not TFile.Exists(System.IOUtils.TPath.Combine(System.IOUtils.TPath.GetDocumentsPath, 'audit.sqlite')) then
+      begin
+        dmLocDB.InitDatabase;
+      end;
+
+      FPinVerified := True;
+      LoadTasks;
+    except
+      on E: Exception do
+      begin
+        ShowMessage('Ошибка открытия базы данных: ' + E.Message);
+        CheckAndRequestPIN;
+      end;
+    end;
+  end
+  else
+  begin
+    ShowMessage('Неверный PIN. Попробуйте снова.');
+    CheckAndRequestPIN;
+  end;
 end;
 
 procedure TformMain.LoadTasks;
@@ -403,8 +634,9 @@ begin
     while not dmLocDB.FDQuery1.Eof do
     begin
       Item := lvTasks.Items.Add;
-      Item.Text := dmLocDB.FDQuery1.FieldByName('title').AsString;
-      Item.Detail := dmLocDB.FDQuery1.FieldByName('description').AsString;
+      // 🔑 Application-level encryption: расшифровка полей при чтении
+      Item.Text := TDatabaseKeyManager.DecryptField(dmLocDB.FDQuery1.FieldByName('title').AsString);
+      Item.Detail := TDatabaseKeyManager.DecryptField(dmLocDB.FDQuery1.FieldByName('description').AsString);
       Item.Tag := dmLocDB.FDQuery1.FieldByName('id').AsInteger;
 
       dmLocDB.FDQuery1.Next;
@@ -435,14 +667,6 @@ procedure TformMain.lvTasksItemClick(const Sender: TObject;
   const AItem: TListViewItem);
 begin
   btnPhoto.Enabled := Assigned(AItem);
-end;
-
-procedure TformMain.ValidateCert(const Sender: TObject;
-  const ARequest: TURLRequest; const Certificate: TCertificate;
-  var Accepted: Boolean);
-begin
-  //не использовать для Production.
-  Accepted := true;
 end;
 
 end.

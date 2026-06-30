@@ -1,9 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
-    <base-config cleartextTrafficPermitted="false">
-        <trust-anchor>
-            <certificates src="user"/>
+    <!-- Для отладки в локальной сети: разрешаем HTTP для всех доменов -->
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
             <certificates src="system"/>
-        </trust-anchor>
+            <certificates src="user"/>
+        </trust-anchors>
     </base-config>
 </network-security-config>

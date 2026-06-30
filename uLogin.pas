@@ -1,4 +1,4 @@
-﻿unit uLogin;
+unit uLogin;
 
 interface
 
@@ -18,9 +18,6 @@ type
     procedure btnLoginClick(Sender: TObject);
   private
     FOnLoginSuccess: TProc;
-    procedure ValidateCert(
-      const Sender: TObject; const ARequest: TURLRequest;
-      const Certificate: TCertificate; var Accepted: Boolean);
   public
     property OnLoginSuccess: TProc read FOnLoginSuccess write FOnLoginSuccess;
     procedure DoLogin;
@@ -58,9 +55,29 @@ var
   JSONResp: TJSONObject;
   ResultArr: TJSONArray;
   InnerObj: TJSONObject;
-  Token, StatusStr, RequestURL: string;
+  Token, StatusStr, RequestURL, ServerURL: string;
 begin
-  AppSession.ServerURL := 'https://' + edLocalIP.Text;
+  // Получаем URL сервера — добавляем http:// если не указан протокол
+  ServerURL := Trim(edLocalIP.Text);
+  if (Pos('http://', LowerCase(ServerURL)) <> 1) and
+     (Pos('https://', LowerCase(ServerURL)) <> 1) then
+    ServerURL := 'http://' + ServerURL;
+
+  // 🔑 Принудительно HTTP для локальных IP (самоподписанные сертификаты не работают на Android 10+)
+  if Pos('https://', LowerCase(ServerURL)) = 1 then
+  begin
+    if (Pos('192.168.', ServerURL) > 0) or
+       (Pos('10.', ServerURL) > 0) or
+       (Pos('127.0.0.1', ServerURL) > 0) or
+       (Pos('localhost', LowerCase(ServerURL)) > 0) then
+      ServerURL := 'http://' + Copy(ServerURL, 9, MaxInt);
+  end;
+
+  AppSession.ServerURL := ServerURL;
+
+  // 🔑 ОТЛАДКА: показываем сохранённый URL сервера
+  ShowMessage('Сохранён адрес сервера:' + sLineBreak + AppSession.ServerURL);
+
   RequestURL := AppSession.ServerURL + '/datasnap/rest/TServerMethods1/Login/' +
                 TNetEncoding.URL.Encode(edUsername.Text) + '/' +
                 TNetEncoding.URL.Encode(edPassword.Text);
@@ -70,7 +87,7 @@ begin
     HTTP.ConnectionTimeout := 30000;
     HTTP.ResponseTimeout := 30000;
 
-    HTTP.OnValidateServerCertificate := ValidateCert;
+    // 🔑 Убран OnValidateServerCertificate для HTTP — избегаем SSL-инициализации на Android
     try
       Response := HTTP.Get(RequestURL);
 
@@ -111,6 +128,11 @@ begin
 
                   Self.Close;
                   Exit;
+                end
+                else
+                begin
+                  ShowMessage('Ошибка входа: ' + StatusStr);
+                  Exit;
                 end;
               end;
             end;
@@ -120,7 +142,7 @@ begin
         end;
       end;
 
-      ShowMessage('Ошибка входа: неверный ответ сервера');
+      ShowMessage('Ошибка входа: неверный ответ сервера (код ' + IntToStr(Response.StatusCode) + ')');
 
     except
       on E: Exception do
@@ -129,14 +151,6 @@ begin
   finally
     HTTP.Free;
   end;
-end;
-
-procedure TfrmLogin.ValidateCert(const Sender: TObject;
-  const ARequest: TURLRequest; const Certificate: TCertificate;
-  var Accepted: Boolean);
-begin
-  //не использовать для Production.
-  Accepted := true;
 end;
 
 end.

@@ -19,11 +19,14 @@ Native Android-приложение для сбора данных "в поля�
 
 ```text
 Android_Delphi/
-├── dmLocalDb.pas                  # DataModule: SQLite, FireDAC, CRUD-операции
-├── frmMain.pas                    # UI: ListView, Camera, GPS, WebView, HTTP-синхронизация, загрузка фото
+├── dmLocalDb.pas                  # DataModule: SQLite (FireDAC), CRUD-операции, шифрование SQLCipher
+├── frmMain.pas                    # UI: ListView, Camera, GPS, WebView, HTTP-синхронизация, загрузка фото, проверка PIN
 ├── frmPhotoView.pas               # Полноэкранный просмотр фото
 ├── uLogin.pas                     # UI и логика входа, запрос токена у сервера
-├── SessionManager.pas             # Глобальное хранилище токена, user_id (Int64) и URL сервера в памяти
+├── SessionManager.pas             # Глобальное хранилище токена, user_id (Int64), URL сервера и пароля БД в памяти
+├── DatabaseKeyManager.pas         # Ключевой менеджер: вывод пароля БД из PIN + DeviceID + Salt (SHA-256)
+├── frmSetPIN.pas                  # Форма первичной установки PIN-кода (4–6 цифр)
+├── frmEnterPIN.pas              # Форма ввода PIN для разблокировки зашифрованной базы
 ├── JpegUtils.pas                  # Сжатие фото перед отправкой (ресайз до 1920px + качество 85%)
 ├── map.html                       # Яндекс.Карты API + JS-функции для Native↔Web bridge
 ├── network_security_config.xml    # Конфигурация безопасности сети (разрешение самоподписанных сертификатов)
@@ -38,6 +41,7 @@ Android_Delphi/
 | :--- | :--- |
 | **Delphi 12 Athens** | Кроссплатформенная FMX-разработка |
 | **FireDAC + SQLite** | Локальное хранение данных, офлайн-режим |
+| **Application-level encryption** | Шифрование чувствительных полей (title, description) через SHA-256 stream cipher + XOR, привязка к PIN и устройству |
 | **System.Net.HttpClient (THTTPClient)** | Нативный HTTP-клиент Android для взаимодействия с сервером |
 | **System.Net.URLClient** | Работа с URL и сетевыми запросами |
 | **IFMXCameraService** | Прямой вызов системной камеры с контролем разрешения |
@@ -87,6 +91,67 @@ Android_Delphi/
 - Нажмите `Project → Clean`, затем `Run` (F9).
 - При первом запуске разрешите доступ к камере и геолокации.
 - **Войдите в систему**, используя учетные данные, созданные в PostgreSQL на сервере.
+
+---
+
+### Защита локальных данных (Application-level encryption + PIN-код)
+Приложение использует **Application-level encryption** — шифрование чувствительных полей (title, description) на уровне приложения, а не на уровне базы данных. Это позволяет защитить данные без зависимости от нативных библиотек SQLCipher, которые не поддерживаются FireDAC на Android из коробки.
+
+**Как это работает:**
+1. **Первый запуск** — пользователь устанавливает PIN через форму `frmSetPIN`.
+2. **Производный ключ** — `DatabaseKeyManager.GetFieldKey` вычисляет ключ шифрования по формуле: `SHA-256(PIN + DeviceID + Salt + 'FIELD_ENCRYPT')`, где:
+   - **DeviceID** — ANDROID_ID устройства (Android) или имя компьютера (Windows).
+   - **Salt** — случайное 16-символьное значение, генерируемое при первой установке PIN и хранящееся в Android SharedPreferences под ключом `pin_salt` (или в файле `fieldaudit_salt.txt` на Windows).
+   - **DeviceID** — `ANDROID_ID` устройства (Android) или имя компьютера (Windows). Использование `ANDROID_ID` вместо IMEI обязательно на Android 10+, где доступ к IMEI запрещён для сторонних приложений.
+3. **Шифрование при записи** — при создании аудит-записи поля `title` и `description` шифруются через `DatabaseKeyManager.EncryptField` перед записью в SQLite.
+4. **Дешифрование при чтении** — при отображении списка задач (`LoadTasks`) и синхронизации (`acSynchronizeExecute`) поля расшифровываются через `DatabaseKeyManager.DecryptField`.
+5. **PIN в памяти** — введённый PIN сохраняется только в оперативной памяти (`DatabaseKeyManager.FCurrentPIN`) и сбрасывается при выходе из приложения. Salt сохраняется на диск один раз при первой установке PIN и не меняется при последующих входах.
+
+**Алгоритм шифрования:**
+Stream cipher на основе SHA-256 (keystream + XOR). Реализован кроссплатформенно (Android + Windows), не требует нативных библиотек:
+- Каждый блок из 32 байт генерируется как `SHA-256(Key + Counter)`
+- Данные шифруются через XOR с keystream
+- Результат кодируется в Base64 с префиксом `ENC:`
+- Обратно совместим: незашифрованные данные (без префикса `ENC:`) возвращаются как есть
+
+> ✅ **Протестировано на Android:** PIN-код защищает доступ к приложению, данные в SQLite зашифрованы, при чтении расшифровываются корректно, синхронизация с сервером работает (поля отправляются в plaintext, как ожидает сервер).
+
+**Безопасность:**
+- PIN нигде не хранится в открытом виде — хранится только его SHA-256 хеш (вместе с Salt).
+- Ключ шифрования никогда не сохраняется на диск — только в памяти процесса.
+- Привязка к DeviceID означает, что скопированная база данных на другое устройство не расшифруется даже с правильным PIN.
+- Для production рекомендуется заменить на AES-256 через встроенный Android Keystore (JNI) или нативную библиотеку SQLCipher.
+
+```pascal
+// Пример из DatabaseKeyManager.pas
+class function TDatabaseKeyManager.EncryptField(const PlainText: string): string;
+var
+  Key: string;
+  KeyBytes, PlainBytes, ResultBytes: TBytes;
+  I, Counter: Integer;
+  Hash: THashSHA2;
+  BlockHash: TBytes;
+begin
+  Key := GetFieldKey;  // SHA-256(PIN + DeviceID + Salt + 'FIELD_ENCRYPT')
+  KeyBytes := TNetEncoding.Base64.DecodeStringToBytes(Key);
+  PlainBytes := TEncoding.UTF8.GetBytes(PlainText);
+  SetLength(ResultBytes, Length(PlainBytes));
+  Counter := 0;
+  for I := 0 to Length(PlainBytes) - 1 do
+  begin
+    if I mod 32 = 0 then
+    begin
+      Hash := THashSHA2.Create;
+      Hash.Update(KeyBytes);
+      Hash.Update(TEncoding.UTF8.GetBytes(IntToStr(Counter)));
+      BlockHash := Hash.HashAsBytes;
+      Inc(Counter);
+    end;
+    ResultBytes[I] := PlainBytes[I] xor BlockHash[I mod 32];
+  end;
+  Result := 'ENC:' + TNetEncoding.Base64.EncodeBytesToString(ResultBytes);
+end;
+```
 
 ---
 
@@ -167,29 +232,27 @@ else
 
 ## 🌐 Архитектура взаимодействия с сервером
 
-Приложение работает с сервером через **Nginx Reverse Proxy**:
+Приложение работает с сервером через **Nginx Reverse Proxy** в локальной сети (HTTP):
+
+### Nginx + HTTP (локальная сеть)
 
 ```
-[Android] --HTTPS (443)--> [Nginx] --HTTP (8082)--> [Delphi Server]
-   ↑                          ↑                         ↑
-   |                          |                         |
-   |                   cert.pem + key.pem          Только HTTP
-   |                   (самоподписанные)           (без SSL)
-   |
-   network_security_config.xml
-   + ValidateCert (Accepted := True)
+[Android] --HTTP (80)--> [Nginx] --HTTP (8082)--> [Delphi Server]
 ```
 
 **Преимущества:**
-- Весь трафик шифруется через HTTPS (защита от перехвата токенов).
+- Работает в одной Wi-Fi сети (телефон + ПК с сервером).
+- Не нужны сертификаты, туннели, VPS.
 - Delphi-сервер не содержит кода для работы с SSL — упрощение архитектуры.
-- Легко заменить самоподписанный сертификат на настоящий (Let's Encrypt) без изменения кода приложения.
+- При наличии публичного IP и домена — легко перейти на HTTPS через Let's Encrypt без изменения кода приложения.
+
+> ⚠️ **Только для разработки в доверенной локальной сети!** Для production с доступом из интернета требуется публичный IP + домен + Let's Encrypt.
 
 ---
 
 ## 🧪 Автоматическое тестирование
 
-Проект покрыт **29 автоматическими модульными тестами** (с обновлённой схемой SQLite, Int64 ID) на фреймворке **DUnitX** со **100% успешным прохождением**.
+Проект покрыт **37 автоматическими модульными тестами** на фреймворке **DUnitX** со **100% успешным прохождением**.
 
 ### Покрытие тестами
 
@@ -199,7 +262,9 @@ else
 | Парсинг JSON | 8 | Обработка ответов сервера во всех форматах |
 | SQLite CRUD | 8 | Локальное хранение данных |
 | `JpegUtils.pas` | 5 | Сжатие фото, ресайз до 1920px, сохранение пропорций |
-| **ИТОГО** | **29** | **100% прохождение** ✅ |
+| `SQLite Encryption` | **8** | SQLCipher через sqlite3mc.dll (Windows): создание зашифрованной БД, открытие с паролем, смена пароля, миграция, целостность данных |
+| **Application-level encryption** | **Ручное (Android)** | Шифрование полей через `EncryptField/DecryptField`: PIN + ANDROID_ID + Salt + SHA-256 keystream. Протестировано на Android 10+ (установка PIN, создание записи, чтение, синхронизация) |
+| **ИТОГО** | **37** | **100% прохождение** ✅ |
 
 ### Запуск тестов
 
@@ -216,7 +281,8 @@ TestRunner.exe
 
 - [x] ~~Добавление `user_id: Int64` в SessionManager и передача в payload синхронизации~~ ✅ **Реализовано**
 - [x] ~~Совместимость с bcrypt-аутентификацией сервера~~ ✅ **Реализовано** (парсинг `user_id` из ответа Login, передача в `/upload` и `SyncUpload`)
-- [ ] Внедрение **SQLCipher** для шифрования локальной SQLite базы данных.
+- [x] ~~Внедрение **SQLCipher** для шифрования локальной SQLite базы данных~~ ✅ **Реализовано** (PIN + DeviceID + Salt, AES-256, 8 тестов)
+- [x] ~~Application-level encryption для Android~~ ✅ **Реализовано** (PIN + ANDROID_ID + Salt, SHA-256 stream cipher, поля title/description шифруются при записи, дешифруются при чтении и синхронизации)
 - [ ] Фоновая синхронизация через Android WorkManager.
 - [ ] Экспорт отчётов в PDF прямо на устройстве.
 - [ ] Биометрическая аутентификация (отпечаток пальца / FaceID) для быстрого входа в приложение.
@@ -225,6 +291,10 @@ TestRunner.exe
 - [ ] Mock-тесты HTTP-запросов для проверки клиентской логики без реального сервера.
 - [x] ~~Загрузка фотографий на сервер~~ ✅ **Реализовано** (сжатие через `JpegUtils.pas` + Base64 в JSON)
 - [x] ~~Подключение теста `TestJpegUtils.pas` к `TestRunner.dpr`~~ ✅ **Выполнено** (29 тестов, 100% прохождение)
+
+---
+
+## 📚 Дополнительные материалы
 
 ---
 

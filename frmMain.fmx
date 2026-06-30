@@ -1,4 +1,4 @@
-﻿object formMain: TformMain
+object formMain: TformMain
   Left = 0
   Top = 0
   Caption = #1052#1086#1073#1080#1083#1100#1085#1099#1081' '#1080#1085#1089#1087#1077#1082#1090#1086#1088

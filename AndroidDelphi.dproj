@@ -333,6 +333,13 @@
             <Form>frmLogin</Form>
             <FormType>fmx</FormType>
         </DCCReference>
+        <DCCReference Include="DatabaseKeyManager.pas"/>
+        <DCCReference Include="frmSetPIN.pas">
+            <Form>frSetPIN</Form>
+        </DCCReference>
+        <DCCReference Include="frmEnterPIN.pas">
+            <Form>frEnterPIN</Form>
+        </DCCReference>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>
         </BuildConfiguration>
