@@ -83,7 +83,7 @@ begin
     FServerURL := LoadedURL;
   end
   else
-    FServerURL := 'http://192.168.1.113:8082';
+    FServerURL := 'http://192.168.1.113';
 end;
 
 procedure TSessionManager.SaveURL;
